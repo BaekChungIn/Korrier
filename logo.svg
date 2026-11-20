@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <defs>
+    <linearGradient id="kr" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#E12B3C"/><stop offset="1" stop-color="#A71E33"/></linearGradient>
+    <linearGradient id="kb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1E4FAE"/><stop offset="1" stop-color="#123A8C"/></linearGradient>
+    <linearGradient id="kg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <clipPath id="ks"><rect x="44" y="74" width="480" height="480" rx="118"/></clipPath>
+    <filter id="kd" x="-20%" y="-20%" width="140%" height="150%"><feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#1E3A8A" flood-opacity=".28"/></filter>
+  </defs>
+  <g filter="url(#kd)">
+    <g clip-path="url(#ks)">
+      <rect x="44" y="74" width="480" height="480" fill="url(#kb)"/>
+      <path d="M44 74H524V330C470 300 420 290 370 310C320 330 290 360 230 360C160 360 100 300 44 318Z" fill="url(#kr)"/>
+      <rect x="44" y="74" width="480" height="480" fill="url(#kg)"/>
+    </g>
+  </g>
+  <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M244 214v-34a20 20 0 0 1 20-20h40a20 20 0 0 1 20 20v34"/>
+    <rect x="200" y="214" width="168" height="186" rx="38"/>
+    <path d="M244 214v186"/>
+  </g>
+  <g fill="#fff" stroke="#fff" stroke-width="10"><circle cx="232" cy="430" r="22" fill="none" stroke-width="22"/><circle cx="336" cy="430" r="22" fill="none" stroke-width="22"/></g>
+  <circle cx="512" cy="88" r="58" fill="#F6CE46" stroke="#fff" stroke-width="10"/>
+  <path transform="translate(484 60) scale(2.35) rotate(45 12 12)" fill="#8A5A0B" d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/>
+</svg>

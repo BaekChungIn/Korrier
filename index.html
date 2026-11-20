@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Korrier - Korea in your Carrier</title>
+  <meta name="theme-color" content="#F5F2EC">
+  <meta name="description" content="Korrier - 실시간 한국 트렌드와 여행 일정">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Korrier">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Noto Sans Thai", sans-serif; -webkit-tap-highlight-color: transparent; box-sizing: border-box; letter-spacing: -0.022em; }
+    body { background:#F5F5F7; margin:0; display:flex; justify-content:center; align-items:center; min-height:100vh; color:#1D1D1F; -webkit-font-smoothing:antialiased; }
+    .app-screen { width:100%; max-width:440px; height:100vh; height:100dvh; max-height:940px; background:#fff; position:relative; display:flex; flex-direction:column; overflow:hidden; box-shadow:0 32px 80px -20px rgba(0,0,0,.16), 0 0 0 1px rgba(0,0,0,.04); }
+    @media (min-width:640px){ .app-screen{ border-radius:48px; height:94vh; border:10px solid #1D1D1F; } }
+    .no-scrollbar::-webkit-scrollbar{ display:none; } .no-scrollbar{ -ms-overflow-style:none; scrollbar-width:none; }
+    .timeline-line{ position:absolute; left:11px; top:28px; bottom:-16px; width:0; border-left:2px dashed #CBD5E1; z-index:0; }
+    .leaflet-container{ font-family:inherit; background:#F1F5F9; }
+    .line-clamp-2{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .snap-x-mandatory{ scroll-snap-type:x mandatory; }
+    .snap-center{ scroll-snap-align:center; }
+    .skeleton{ background:linear-gradient(90deg,#EEF0F3 25%,#F6F7F9 37%,#EEF0F3 63%); background-size:400% 100%; animation:sk 1.3s ease infinite; }
+    @keyframes sk{ 0%{background-position:100% 50%} 100%{background-position:0 50%} }
+    .sheet-enter{ animation:sheetUp .28s cubic-bezier(.2,.8,.2,1); }
+    @keyframes sheetUp{ from{ transform:translateY(40px); opacity:.4 } to{ transform:none; opacity:1 } }
+    .modal{ display:none; }
+    .wordmark{ background:linear-gradient(90deg,#1B2A6B,#5B2D82); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .safe-top{ padding-top:calc(env(safe-area-inset-top) + 1rem); }
+    #tabBar{ height:calc(72px + env(safe-area-inset-bottom)); padding-bottom:env(safe-area-inset-bottom); }
+    @media (display-mode: standalone){ .app-screen{ max-width:none; max-height:none; border:0 !important; border-radius:0 !important; height:100dvh; } }
+    .modal.open{ display:flex; }
+  </style>
+</head>
+<body>
+<main class="app-screen" id="app">
+
+  <!-- 스플래시 -->
+  <div id="splashScreen" class="absolute inset-0 bg-[#F5F2EC] z-[150] flex flex-col items-center justify-center px-8 transition-opacity duration-300 select-none">
+    <img src="./logo.svg" alt="Korrier" class="w-[190px] h-[190px] -mb-2">
+    <h1 class="wordmark text-[46px] font-black tracking-tight mb-1">Korrier</h1>
+    <p class="text-[13px] text-[#8E8E93] mb-6">Korea in your Carrier</p>
+    <div class="flex items-center gap-2 text-[#8E8E93] text-[13px] font-light">
+      <div class="w-4 h-4 border-2 border-[#1E3A8A] border-t-transparent rounded-full animate-spin"></div>
+      <span data-i18n="splashLoading"></span>
+    </div>
+  </div>
+
+  <!-- 헤더 -->
+  <header class="safe-top px-5 pb-3 bg-white/95 backdrop-blur-xl border-b border-black/[0.04] shrink-0 z-30">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-2 select-none">
+        <img src="./logo.svg" alt="" class="w-11 h-11 -ml-1.5 -my-1">
+        <div>
+          <h2 class="wordmark text-[22px] font-extrabold tracking-tight leading-none">Korrier</h2>
+          <p class="text-[10px] text-[#8E8E93] tracking-[0.12em] mt-0.5 uppercase" data-i18n="tagline"></p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button id="btnRefresh" class="w-9 h-9 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center active:scale-95 transition" aria-label="refresh">
+          <span id="refreshIcon" data-icon="refresh" data-icon-cls="w-4 h-4"></span>
+        </button>
+        <button id="btnProfile" class="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] active:scale-95 transition">
+          <span id="navAvatar" class="w-7 h-7 rounded-full overflow-hidden bg-[#E2E8F0] flex items-center justify-center text-slate-500"></span>
+          <span id="navProfileName" class="text-[12px] font-medium max-w-[72px] truncate"></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-2 mt-2.5">
+      <div class="relative">
+        <button id="btnLang" class="w-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] rounded-xl px-3 py-2 flex items-center justify-between text-[13px]">
+          <span class="flex items-center gap-1.5 truncate"><span data-icon="globe" data-icon-cls="w-4 h-4 text-[#6E6E73]"></span><span id="currentLangText" class="truncate"></span></span>
+          <span data-icon="chevD" data-icon-cls="w-3.5 h-3.5 text-[#8E8E93]"></span>
+        </button>
+        <div id="langMenu" class="hidden absolute top-full mt-1.5 left-0 w-52 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
+      </div>
+      <div class="relative">
+        <button id="btnAuto" class="w-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] rounded-xl px-3 py-2 flex items-center justify-between text-[13px] text-[#2563EB]">
+          <span class="flex items-center gap-1.5 truncate"><span data-icon="timer" data-icon-cls="w-4 h-4"></span><span id="currentAutoText" class="truncate font-medium"></span></span>
+          <span data-icon="chevD" data-icon-cls="w-3.5 h-3.5"></span>
+        </button>
+        <div id="autoMenu" class="hidden absolute top-full mt-1.5 right-0 w-48 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- 본문 -->
+  <section id="contentContainer" class="flex-1 overflow-y-auto px-4 py-4 space-y-4 pb-28 no-scrollbar bg-[#F5F5F7]">
+    <div class="bg-white rounded-[24px] px-5 py-4 border border-black/[0.03] shadow-[0_2px_14px_rgba(0,0,0,0.03)]">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <h3 id="categoryTitle" class="text-[26px] font-bold tracking-tight leading-tight"></h3>
+          <p id="liveClock" class="text-[12px] text-[#8E8E93] font-medium tracking-wider mt-0.5"></p>
+        </div>
+        <div id="liveBadge" class="flex items-center gap-1.5 bg-[#E8F5E9] border border-[#C8E6C9] px-3 py-1 rounded-full shrink-0 mt-1">
+          <span class="w-2 h-2 rounded-full bg-[#34C759] animate-pulse"></span>
+          <span class="text-[12px] text-[#2E7D32]" data-i18n="liveSearch"></span>
+        </div>
+      </div>
+      <div id="metaLine" class="hidden mt-2 text-[11px] text-[#8E8E93] leading-relaxed"></div>
+    </div>
+
+    <div id="installBanner" class="hidden bg-white rounded-[22px] p-4 border border-black/[0.04] flex items-center gap-3">
+      <img src="./icons/icon-192.png" alt="" class="w-11 h-11 rounded-xl">
+      <div class="flex-1 min-w-0"><p class="text-[13px] font-semibold" data-i18n="installTitle"></p><p id="installDesc" class="text-[11px] text-[#8E8E93] leading-snug"></p></div>
+      <button id="btnInstall" class="px-3 py-1.5 rounded-full bg-[#0071E3] text-white text-[12px] font-medium" data-i18n="install"></button>
+      <button id="btnInstallClose" class="w-7 h-7 rounded-full text-[#8E8E93] flex items-center justify-center" data-icon="close" data-icon-cls="w-4 h-4"></button>
+    </div>
+
+    <!-- 지도 / 여행 일정 -->
+    <div id="mapView" class="hidden space-y-4">
+      <div id="sharedBanner" class="hidden bg-blue-50 border border-blue-100 rounded-2xl p-3 flex items-center justify-between gap-2 text-[12px] text-blue-900"></div>
+
+      <div id="tripEmpty" class="bg-white rounded-[32px] p-6 shadow-[0_2px_16px_rgba(0,0,0,0.03)] border border-black/[0.03]">
+        <h4 class="text-[22px] font-bold tracking-tight leading-tight"><span data-i18n="whereTo"></span><br><span class="text-[#0071E3]" data-i18n="makeTrip"></span></h4>
+        <p class="text-[12px] text-[#8E8E93] font-light mt-1.5" data-i18n="tripIntro"></p>
+        <div id="quickRegions" class="flex flex-wrap gap-2 my-5"></div>
+        <div id="savedTripsBox" class="hidden mb-5">
+          <p class="text-[12px] font-semibold text-[#8E8E93] mb-2" data-i18n="myTrips"></p>
+          <div id="savedTripsList" class="space-y-2"></div>
+        </div>
+        <div id="noTripBox" class="py-8 border-t border-b border-black/[0.04] text-center mb-5">
+          <div class="w-14 h-14 rounded-full bg-[#F2F2F7] mx-auto flex items-center justify-center text-[#0071E3] mb-2.5" data-icon="map" data-icon-cls="w-7 h-7"></div>
+          <p class="text-[14px] font-semibold mb-1" data-i18n="noTrip"></p>
+          <p class="text-[12px] text-[#8E8E93] font-light" data-i18n="noTripSub"></p>
+        </div>
+        <button id="btnNewTrip" class="w-full py-3.5 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white font-medium text-[14px] flex items-center justify-center gap-2 active:scale-95 transition">
+          <span data-icon="plus" data-icon-cls="w-4 h-4"></span><span data-i18n="newTrip"></span>
+        </button>
+      </div>
+
+      <div id="tripActive" class="hidden bg-white rounded-[32px] p-5 shadow-[0_2px_16px_rgba(0,0,0,0.03)] border border-black/[0.03]">
+        <div class="flex items-center justify-between mb-3">
+          <button id="btnCloseTrip" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center hover:bg-[#E5E5EA]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+          <div class="flex items-center gap-2 min-w-0">
+            <span id="tripBadgeRegion" class="px-2.5 py-0.5 rounded-full bg-blue-50 text-[#0071E3] text-[11px] font-medium truncate max-w-[130px]"></span>
+            <span id="tripBadgeDate" class="text-[12px] text-[#8E8E93] truncate"></span>
+          </div>
+          <button id="btnShareTrip" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center hover:bg-[#E5E5EA]" data-icon="share" data-icon-cls="w-4 h-4"></button>
+        </div>
+        <div class="text-center mb-4">
+          <h4 id="tripHeading" class="text-[21px] font-bold tracking-tight leading-snug"></h4>
+          <p class="text-[12px] text-[#8E8E93] font-light mt-1" data-i18n="tripSub"></p>
+        </div>
+        <div class="relative isolate w-full h-[240px] rounded-[22px] border border-black/[0.06] overflow-hidden mb-4 bg-[#F1F5F9]">
+          <div id="tripMap" class="w-full h-full"></div>
+          <button id="btnCenterMap" class="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-white text-[#0071E3] shadow-md border border-black/[0.08] flex items-center justify-center z-[400] active:scale-90 transition" data-icon="crosshair" data-icon-cls="w-4 h-4"></button>
+        </div>
+        <div id="dayPills" class="flex items-center gap-2 mb-4 overflow-x-auto no-scrollbar"></div>
+        <button id="btnAddPlace" class="w-full mb-4 py-3 px-4 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-[13px] font-medium flex items-center justify-center gap-2 active:scale-95 transition">
+          <span data-icon="search" data-icon-cls="w-4 h-4"></span><span data-i18n="addPlace"></span>
+        </button>
+        <div id="timeline" class="space-y-3 relative"></div>
+        <div id="tripActions" class="mt-6 pt-4 border-t border-black/[0.04] grid grid-cols-2 gap-2">
+          <button id="btnChangeTrip" class="py-3 rounded-2xl bg-[#F2F2F7] hover:bg-[#E5E5EA] text-[12px] font-medium" data-i18n="changeTrip"></button>
+          <button id="btnSaveTrip" class="py-3 rounded-2xl bg-[#1D1D1F] text-white text-[12px] font-medium flex items-center justify-center gap-1.5"><span data-icon="bookmark" data-icon-cls="w-3.5 h-3.5"></span><span data-i18n="saveTrip"></span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 패션 서브탭 -->
+    <div id="fashionSubTabs" class="hidden space-y-2">
+      <div class="grid grid-cols-2 p-1 bg-[#E5E5EA]/70 rounded-2xl gap-1 text-[13px] border border-black/[0.04]">
+        <button id="subTabArtist" class="py-2 rounded-xl flex items-center justify-center gap-1.5 transition"><span data-icon="star" data-icon-cls="w-3.5 h-3.5"></span><span data-i18n="artistTab"></span></button>
+        <button id="subTabKFashion" class="py-2 rounded-xl flex items-center justify-center gap-1.5 transition"><span data-icon="trend" data-icon-cls="w-3.5 h-3.5"></span><span data-i18n="kfashionTab"></span></button>
+      </div>
+      <div id="platformArea" class="hidden flex items-center bg-white p-1 rounded-2xl border border-black/[0.06]">
+        <button id="platMusinsa" class="flex-1 py-1.5 rounded-xl text-[12px] transition" data-i18n="musinsa"></button>
+        <button id="platAbly" class="flex-1 py-1.5 rounded-xl text-[12px] transition" data-i18n="ably"></button>
+      </div>
+    </div>
+
+    <!-- 리스트 -->
+    <div id="listArea" class="space-y-4"></div>
+  </section>
+
+  <!-- 하단 탭바 -->
+  <nav id="tabBar" class="absolute bottom-0 left-0 right-0 h-[72px] bg-white/90 backdrop-blur-2xl border-t border-black/[0.05] flex items-stretch justify-around px-1 z-30"></nav>
+
+  <!-- 상세 시트 -->
+  <div id="sheetBackdrop" class="hidden absolute inset-0 bg-black/45 backdrop-blur-sm z-40"></div>
+  <div id="detailSheet" class="hidden absolute bottom-0 left-0 right-0 z-50 bg-white rounded-t-[36px] px-6 pt-3 pb-8 shadow-[0_-20px_50px_rgba(0,0,0,0.18)] flex-col max-h-[90%] overflow-hidden border-t border-black/[0.06]">
+    <div id="sheetHandle" class="w-12 h-1.5 bg-[#D1D1D6] rounded-full mx-auto mb-4 shrink-0 cursor-pointer"></div>
+    <div id="detailBody" class="overflow-y-auto no-scrollbar space-y-4 pb-3"></div>
+  </div>
+
+  <!-- 로그인/회원가입 -->
+  <div id="authModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[160] items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-sm p-6 shadow-2xl relative">
+      <div class="flex items-center justify-between mb-1">
+        <h4 id="authTitle" class="text-[20px] font-bold tracking-tight"></h4>
+        <button data-close="authModal" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+      </div>
+      <p class="text-[12px] text-[#8E8E93] mb-4" data-i18n="authSub"></p>
+      <form id="authForm" class="space-y-3" novalidate>
+        <label id="emailWrap" class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="email"></span>
+          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="mail" data-icon-cls="w-4 h-4"></span>
+          <input id="authEmail" type="email" autocomplete="email" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500" required></div></label>
+        <label id="pwWrap" class="block"><span id="pwLabel" class="text-[11px] font-medium text-[#8E8E93]" data-i18n="password"></span>
+          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="lock" data-icon-cls="w-4 h-4"></span>
+          <input id="authPassword" type="password" autocomplete="current-password" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500" required></div>
+          <span id="pwHintText" class="hidden text-[11px] text-[#8E8E93] mt-1 block" data-i18n="pwHint"></span></label>
+        <label id="nickWrap" class="hidden block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="nickname"></span>
+          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="user" data-icon-cls="w-4 h-4"></span>
+          <input id="authNickname" type="text" maxlength="20" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"></div></label>
+        <p id="authError" class="hidden text-[12px] text-rose-600 flex items-center gap-1"></p>
+        <p id="authInfo" class="hidden text-[12px] text-[#2E7D32] bg-[#E8F5E9] rounded-xl px-3 py-2 flex items-start gap-1.5"></p>
+        <button id="authSubmit" type="submit" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-[#1E3A8A] to-[#2563EB] text-white font-medium text-[14px] active:scale-95 transition disabled:opacity-60"></button>
+      </form>
+      <button id="authSwitch" class="w-full mt-3 text-[12px] text-[#0071E3] font-medium"></button>
+      <button id="authForgot" class="w-full mt-2 text-[11px] text-[#8E8E93]" data-i18n="forgotPw"></button>
+    </div>
+  </div>
+
+  <!-- 프로필 -->
+  <div id="profileModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[160] items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-sm p-6 shadow-2xl max-h-[90%] overflow-y-auto no-scrollbar">
+      <div class="flex items-center justify-between pb-3 border-b border-black/[0.04] mb-4">
+        <h4 class="text-[18px] font-bold" data-i18n="profile"></h4>
+        <button data-close="profileModal" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+      </div>
+      <div class="flex flex-col items-center text-center mb-4">
+        <button id="btnPhoto" class="relative">
+          <span id="profileAvatar" class="w-[76px] h-[76px] rounded-full overflow-hidden bg-[#E2E8F0] border-2 border-blue-600 flex items-center justify-center text-slate-400"></span>
+          <span class="absolute bottom-0 right-0 w-7 h-7 rounded-full bg-blue-600 border-2 border-white text-white flex items-center justify-center" data-icon="camera" data-icon-cls="w-3.5 h-3.5"></span>
+        </button>
+        <input id="photoInput" type="file" accept="image/*" class="hidden">
+        <p id="profileEmail" class="text-[12px] text-[#8E8E93] mt-2"></p>
+      </div>
+      <label class="block mb-3"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="nickname"></span>
+        <input id="profileNickname" type="text" maxlength="20" class="mt-1 w-full px-3.5 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] font-medium outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"></label>
+      <button id="btnSaveProfile" class="w-full py-3 rounded-2xl bg-gradient-to-r from-[#1E3A8A] to-[#2563EB] text-white font-medium text-[14px] active:scale-95 transition" data-i18n="save"></button>
+
+      <details class="mt-5 bg-[#F8F8FA] rounded-2xl p-4">
+        <summary class="text-[13px] font-semibold cursor-pointer flex items-center gap-1.5"><span data-icon="lock" data-icon-cls="w-4 h-4"></span><span data-i18n="changePw"></span></summary>
+        <div class="space-y-2 mt-3">
+          <input id="pwCurrent" type="password" autocomplete="current-password" class="w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none" data-i18n-ph="currentPw">
+          <input id="pwNext" type="password" autocomplete="new-password" class="w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none" data-i18n-ph="newPw">
+          <button id="btnChangePw" class="w-full py-2 rounded-xl bg-[#1D1D1F] text-white text-[12px] font-medium" data-i18n="changePw"></button>
+        </div>
+      </details>
+      <div class="grid grid-cols-2 gap-2 mt-4">
+        <button id="btnLogout" class="py-2.5 rounded-2xl bg-[#F2F2F7] text-[13px] font-medium flex items-center justify-center gap-1.5"><span data-icon="logout" data-icon-cls="w-4 h-4"></span><span data-i18n="logout"></span></button>
+        <button id="btnDeleteAccount" class="py-2.5 rounded-2xl bg-rose-50 text-rose-600 text-[12px] font-medium" data-i18n="deleteAccount"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 일정 만들기 마법사 -->
+  <div id="wizardModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[155] items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white rounded-t-[36px] sm:rounded-[36px] w-full max-w-md max-h-[90%] overflow-hidden flex flex-col shadow-2xl">
+      <div class="px-6 pt-5 pb-3 border-b border-black/[0.04] flex items-center justify-between">
+        <div>
+          <span id="wizStep" class="text-[11px] font-medium text-[#0071E3] tracking-wider"></span>
+          <h4 id="wizTitle" class="text-[18px] font-bold tracking-tight"></h4>
+        </div>
+        <button data-close="wizardModal" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-5 no-scrollbar">
+        <div id="wizStep1" class="space-y-3">
+          <div class="relative">
+            <span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="search" data-icon-cls="w-4 h-4"></span>
+            <input id="regionInput" type="text" class="w-full px-3.5 py-2.5 pl-9 rounded-2xl bg-[#F2F2F7] text-[13px] font-medium outline-none" data-i18n-ph="regionPh">
+          </div>
+          <p id="regionListLabel" class="text-[12px] text-[#8E8E93] font-medium"></p>
+          <div id="regionGrid" class="grid grid-cols-2 gap-2"></div>
+        </div>
+        <div id="wizStep2" class="hidden">
+          <div class="bg-[#F8F8FA] rounded-2xl p-4 border border-black/[0.04]">
+            <div class="flex items-center justify-between mb-3">
+              <button id="calPrev" class="w-8 h-8 rounded-full bg-white shadow-sm flex items-center justify-center" data-icon="chevL" data-icon-cls="w-4 h-4"></button>
+              <span id="calLabel" class="text-[14px] font-bold"></span>
+              <button id="calNext" class="w-8 h-8 rounded-full bg-white shadow-sm flex items-center justify-center" data-icon="chevR" data-icon-cls="w-4 h-4"></button>
+            </div>
+            <div id="calWeekdays" class="grid grid-cols-7 gap-1 text-center text-[11px] text-[#8E8E93] mb-2 font-medium"></div>
+            <div id="calDays" class="grid grid-cols-7 gap-1 text-center text-[12px]"></div>
+            <div class="mt-4 pt-3 border-t border-black/[0.04] text-center">
+              <p class="text-[11px] text-[#8E8E93]" data-i18n="selectedDates"></p>
+              <p id="calSummary" class="text-[14px] font-bold text-[#0071E3] mt-0.5"></p>
+              <p class="text-[10px] text-[#8E8E93] mt-1 flex items-center justify-center gap-1"><span data-icon="info" data-icon-cls="w-3 h-3"></span><span data-i18n="dateHint"></span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="p-4 border-t border-black/[0.04] flex items-center gap-3">
+        <button id="wizPrev" class="hidden px-4 py-3 rounded-2xl bg-[#F2F2F7] text-[13px] font-medium" data-i18n="prev"></button>
+        <button id="wizNext" class="flex-1 py-3 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-[13px] font-medium"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 장소 검색 -->
+  <div id="placeModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[158] items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white rounded-t-[36px] sm:rounded-[36px] w-full max-w-md max-h-[92%] overflow-hidden flex flex-col shadow-2xl">
+      <div class="px-5 pt-4 pb-3 border-b border-black/[0.04] flex items-center justify-between">
+        <div>
+          <h4 class="text-[17px] font-bold" data-i18n="placeTitle"></h4>
+          <p class="text-[11px] text-[#8E8E93]" data-i18n="placeSub"></p>
+        </div>
+        <button data-close="placeModal" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-5 no-scrollbar space-y-4">
+        <div class="relative">
+          <span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="search" data-icon-cls="w-4 h-4"></span>
+          <input id="placeInput" type="text" class="w-full px-3.5 py-2.5 pl-9 pr-9 rounded-2xl bg-[#F2F2F7] text-[13px] font-medium outline-none focus:bg-white focus:ring-1 focus:ring-blue-500" data-i18n-ph="placePh">
+          <div id="placeSpinner" class="hidden absolute right-3 top-3 w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
+        <div id="placeResults" class="space-y-1.5 max-h-56 overflow-y-auto no-scrollbar border rounded-2xl p-2 border-black/[0.05] bg-[#FAFAFC] min-h-[60px]"></div>
+        <div class="bg-[#F8F8FA] rounded-2xl p-4 border border-black/[0.04] space-y-3">
+          <label class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="visitDay"></span>
+            <select id="placeDay" class="mt-1 w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none font-medium"></select></label>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="startTime"></span>
+              <input id="placeTime" type="time" value="11:00" class="mt-1 w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none font-medium"></label>
+            <label class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="duration"></span>
+              <select id="placeDuration" class="mt-1 w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none font-medium"></select></label>
+          </div>
+          <div>
+            <span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="placeType"></span>
+            <div id="placeTypeBtns" class="grid grid-cols-4 gap-1.5 mt-1 text-[11px]"></div>
+          </div>
+          <label class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="memo"></span>
+            <input id="placeMemo" type="text" maxlength="200" class="mt-1 w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[12px] outline-none" data-i18n-ph="memoPh"></label>
+        </div>
+        <button id="btnCommitPlace" class="w-full py-3.5 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white font-medium text-[14px] active:scale-95 transition" data-i18n="addBtn"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 토스트 -->
+  <div id="toast" class="absolute top-16 left-1/2 -translate-x-1/2 bg-[#1D1D1F]/90 backdrop-blur-xl text-white text-[12px] px-4 py-2 rounded-full shadow-lg pointer-events-none transition-all duration-300 opacity-0 -translate-y-2 z-[170] flex items-center gap-2 max-w-[90%]">
+    <span id="toastIcon" class="shrink-0"></span><span id="toastMsg" class="truncate"></span>
+  </div>
+</main>
+
+<script src="./config.js"></script>
+<script src="./i18n.js"></script>
+<script src="./icons.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
