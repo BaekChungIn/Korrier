@@ -458,14 +458,19 @@ const COMMON_RULES = (today: string) => `
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
 const TREND_VER = "trend:v10:";
+/** 무신사·에이블리는 새 확인 방식(v11)으로 다시 만들고, 나머지 탭은 그대로 */
+const trendKey = (cat: string) => `${/^fashion-(ably|musinsa)$/.test(cat) ? "trend:v11:" : TREND_VER}${cat}`;
 /** 서버 코드 버전: 앱 설정 맨 아래와 함수 주소(브라우저로 열기)에서 확인 */
-const SERVER_VERSION = "v14";
+const SERVER_VERSION = "v15";
 const lastAi: Record<string, string> = {};
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
 - 매장, 쇼핑몰·플랫폼 자체, 할인/쿠폰/세일/기획전/프로모션/이벤트/행사, 브랜드 소식, 랭킹 기사 제목은 절대 넣지 마세요.`;
 
+const PLATFORM_RULE = (p: string) => `
+- 그 글에 "${p}"라는 말과 그 상품이 함께 나온 것만. ${p}와 상관없는 글(다이소·코스트코·유니클로·백화점·명품·시장·지하상가 쇼핑 글)에서 뽑지 마세요.
+- 상가·몰·시장 이름(고투몰, 남대문 등)이나 브랜드 없이 옷 종류만 있는 것(예: "경량패딩")은 제외.`;
 const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
   hotplace: {
     ask: "지금 대한민국에서 가장 핫한 장소(팝업스토어, 카페, 맛집, 전시, 거리, 명소)",
@@ -483,13 +488,13 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
     fields: '{"artist":"착용한 한국 연예인(그룹)","brand":"브랜드","item":"제품명","wornDate":"YYYY-MM-DD","wornWhere":"착용 장소/상황","price":"판매가(모르면 빈 문자열)","summary":"착용 상황과 반응 1~2문장"}',
   },
   "fashion-musinsa": {
-    ask: "무신사(MUSINSA)에서 지금 랭킹 상위·판매 급상승 중인 패션 상품",
-    rule: PRODUCT_RULE,
+    ask: "무신사(MUSINSA)에서 판매 중이고 지금 랭킹 상위·판매 급상승 중인 패션 상품(무신사 입점 브랜드의 옷·신발·가방·액세서리)",
+    rule: PRODUCT_RULE + PLATFORM_RULE("무신사"),
     fields: '{"brand":"브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 1문장"}',
   },
   "fashion-ably": {
-    ask: "에이블리(ABLY)에서 지금 랭킹 상위·판매 급상승 중인 패션 상품",
-    rule: PRODUCT_RULE,
+    ask: "에이블리(ABLY) 앱에서 판매 중이고 지금 랭킹 상위·판매 급상승 중인 패션 상품(에이블리 입점 마켓·브랜드의 옷·신발·가방·액세서리)",
+    rule: PRODUCT_RULE + PLATFORM_RULE("에이블리"),
     fields: '{"brand":"마켓/브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 1문장"}',
   },
   concert: {
@@ -523,6 +528,40 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
 const NOT_PRODUCT = /할인|쿠폰|세일|기획전|프로모션|이벤트|행사|매장|스토어|지점|플래그십|특화|체험|공간|오픈|팝업|블랙프라이데이|광군제|페스타|랭킹|콘텐츠|무료배송|적립|특가|위크|브랜드데이/;
 const PLATFORM = /^(에이블리|ABLY|무신사|MUSINSA|올리브영|OLIVE ?YOUNG|지그재그|29CM|W컨셉)$/i;
 const NOT_KCONCERT = /오케스트라|클래식|교향|필하모닉|송년음악회|신년음악회|뮤지컬|오페라|합창|발레|국악관현악/;
+/** 무신사·에이블리 탭에 들어오면 안 되는 곳(다른 매장·몰·명품) */
+const NOT_ON_PLATFORM = /다이소|코스트코|이마트|홈플러스|롯데마트|트레이더스|고투몰|고터몰|지하상가|시장|남대문|동대문|아울렛|백화점|편의점|쿠팡|알리|테무|유니클로|자라|ZARA|H&M|올리브영/i;
+const LUXURY = /디올|샤넬|구찌|루이\s?비통|프라다|에르메스|셀린느|보테가|발렌시아가|생로랑|미우미우|롤렉스|까르띠에|Dior|Chanel|Gucci|Louis\s?Vuitton|Prada|Hermes|Celine/i;
+const GARMENT_ONLY = /^(경량\s?패딩|롱?패딩|니트|코트|가디건|스카프|장갑|목도리|부츠|어그|후리스|맨투맨|후드|후드티|청바지|슬랙스|바지|치마|스커트|원피스|가방|모자|비니|조끼|패딩조끼|레깅스|머플러)$/;
+const PLATFORM_WORD: Record<string, RegExp> = { "fashion-ably": /에이블리|ably/i, "fashion-musinsa": /무신사|musinsa/i };
+/** 무신사·에이블리: 그 플랫폼 이름과 상품(브랜드·상품명 핵심 단어)이 같은 글에 함께 있어야 인정 */
+function platformEvidence(cat: string, c: any, snips: Snip[]): Snip | null {
+  const pw = PLATFORM_WORD[cat];
+  if (!pw) return null;
+  const n = (x: unknown) => String(x || "").toLowerCase().replace(/[\s"'“”‘’·.,:()\[\]\-_/]/g, "");
+  const brand = n(c.brand);
+  const words = String(c.item || "").split(/[\s,·/()\[\]]+/).map(n).filter((w) => w.length >= 2 && !GARMENT_ONLY.test(w));
+  const keys = [brand, ...words].filter((k) => k.length >= 2);
+  if (!keys.length) return null;
+  for (const sn of snips) {
+    const raw = `${sn.t} ${sn.d}`;
+    if (!pw.test(raw)) continue;
+    const flat = n(raw);
+    // 브랜드가 있으면 브랜드 + (상품명 단어 하나 이상, 없으면 브랜드만), 브랜드가 흔하면 상품명 단어 2개
+    const brandHit = brand.length >= 2 && flat.includes(brand);
+    const wordHits = words.filter((w) => flat.includes(w)).length;
+    if ((brandHit && (wordHits >= 1 || !words.length)) || wordHits >= 2) return sn;
+  }
+  return null;
+}
+function platformOk(cat: string, c: any) {
+  const s = (v: unknown) => String(v || "").trim();
+  const all = `${s(c.brand)} ${s(c.item)}`;
+  if (NOT_ON_PLATFORM.test(all)) return false;
+  if (cat === "fashion-ably" && LUXURY.test(all)) return false;
+  if (GARMENT_ONLY.test(s(c.brand).replace(/\s/g, "")) && GARMENT_ONLY.test(s(c.item).replace(/\s/g, ""))) return false;
+  if (s(c.brand).replace(/\s/g, "") === s(c.item).replace(/\s/g, "")) return false; // "경량패딩 경량패딩"
+  return true;
+}
 function validCandidate(cat: string, c: any): boolean {
   const s = (v: unknown) => String(v || "").trim();
   if (cat === "beauty") {
@@ -531,6 +570,7 @@ function validCandidate(cat: string, c: any): boolean {
   if (cat.startsWith("fashion")) {
     if (!s(c.brand) || !s(c.item) || PLATFORM.test(s(c.brand)) || NOT_PRODUCT.test(`${c.brand} ${c.item}`)) return false;
     if (cat === "fashion-artist" && !s(c.artist)) return false;
+    if (PLATFORM_WORD[cat] && !platformOk(cat, c)) return false;
     return true;
   }
   if (cat === "concert") return !!(s(c.artist) && s(c.title)) && ["kpop", "singer", "actor", "entertainer"].includes(s(c.artistType).toLowerCase()) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
@@ -865,7 +905,13 @@ ${snipText(snips)}`, { maxTokens: 5000 });
     refs.forEach((n: number) => { if (!sources.some((x) => x.uri === snips[n].link)) sources.push({ title: snips[n].t, uri: snips[n].link }); });
     if (c && !c.sourceUrl && refs.length) c.sourceUrl = snips[refs[0]].link;
   });
-  return { cands: cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c)), sources };
+  let out = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
+  if (PLATFORM_WORD[cat]) {
+    // 플랫폼 이름과 같은 글에 나온 상품 우선. 너무 적으면(5개 미만) 걸러내기를 통과한 나머지로 10개까지 채움
+    const ok = out.filter((c: any) => { const ev = platformEvidence(cat, c, snips); if (ev) c.sourceUrl = ev.link; return !!ev; });
+    out = ok.length >= 5 ? ok : [...ok, ...out.filter((c: any) => !ok.includes(c))].slice(0, Math.max(ok.length, 10));
+  }
+  return { cands: out, sources };
 }
 const normName = (x: string) => String(x || "").toLowerCase().replace(/\(.*?\)|[\s·.\-_'"]/g, "");
 
@@ -895,6 +941,7 @@ async function buildTrends(cat: string) {
     const gs = (await Promise.all(SEEDS[cat].slice(0, 2).map((q) => brightSearch(q, 10)))).flat();
     if (gs.length) { snips = [...gs, ...snips].slice(0, opt.max + 20); usedGoogle = true; }
     if (cat === "fashion-artist") snips = [...(await inkistyleSnips()), ...snips].slice(0, opt.max + 20);
+    const allSnips: Snip[] = [...snips];
     if (snips.length >= 5) {
       const r = await pickCandidates(cat, snips, hint);
       cands = r.cands; sources = r.sources;
@@ -903,6 +950,7 @@ async function buildTrends(cat: string) {
     if (cands.length + kopis.length < 12 && EXTRA_SEEDS[cat]) {
       const seenLinks = new Set(snips.map((x) => x.link));
       const more = (await collectSnippets(EXTRA_SEEDS[cat], opt.per, opt.max, opt.days)).filter((x) => !seenLinks.has(x.link));
+      allSnips.push(...more);
       if (more.length >= 5) {
         const r2 = await pickCandidates(cat, more, hint).catch(() => ({ cands: [], sources: [] }));
         cands = cands.concat(r2.cands); sources = sources.concat(r2.sources);
@@ -914,7 +962,8 @@ async function buildTrends(cat: string) {
 - JSON 하나만 출력: {"items":[...]} 각 항목 형식: ${spec.fields}`).catch(() => null);
     if (gr) {
       const o = parseJsonLoose(gr.text);
-      const gc = (Array.isArray(o) ? o : o?.items || []).filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
+      const gc = (Array.isArray(o) ? o : o?.items || []).filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c)
+        && (!PLATFORM_WORD[cat] || !!platformEvidence(cat, c, allSnips)));
       if (gc.length) { cands = cands.concat(gc); sources = sources.concat(gr.sources.slice(0, 6)); usedGoogle = true; }
     }
     if (!cands.length && !kopis.length && snips.length < 5) throw new HttpError(502, "not_enough_data");
@@ -1014,7 +1063,7 @@ function background(p: Promise<unknown>) {
   if (rt?.waitUntil) rt.waitUntil(safe);
 }
 async function rebuild(cat: string) {
-  const key = `${TREND_VER}${cat}`;
+  const key = trendKey(cat);
   if (!(await tryLock(key))) return false;
   try {
     const prev = (await cacheGet(key).catch(() => null))?.data;
@@ -1039,7 +1088,7 @@ async function rebuild(cat: string) {
 
 async function getTrends(cat: string, lang: string, force: boolean) {
   if (!SPECS[cat]) throw new HttpError(404, "unknown_category");
-  const key = `${TREND_VER}${cat}`;
+  const key = trendKey(cat);
   const ttl = CFG.trendTtlMin * 60e3;
   let row = await cacheGet(key);
   let base = row?.data || null;
@@ -1065,7 +1114,7 @@ async function getTrends(cat: string, lang: string, force: boolean) {
 async function warmOne() {
   const cats = Object.keys(SPECS);
   const ages = await Promise.all(cats.map(async (c) => {
-    const r = await cacheGet(`${TREND_VER}${c}`).catch(() => null);
+    const r = await cacheGet(trendKey(c)).catch(() => null);
     return { c, at: r?.data?.updatedAt ? Date.parse(r.data.updatedAt) : 0 };
   }));
   ages.sort((a, b) => a.at - b.at);
@@ -1257,6 +1306,8 @@ const TYPE_KW: Record<string, RegExp> = {
 const GOSSIP = /목격|포착|근황|봤다|봤는데|봤어|지하철|버스에서|열애|결별|이혼|논란|해명|사과문|루머|의혹|미담|인증샷|셀카|공항\s?패션|출국|입국|부고|별세|하객|선행|기부|휴가\s?중|외출/;
 const GENERIC_W = /^(경기|출연|발매|콘서트|팬미팅|팬사인회|방송|공개|시작|일정|예정|행사|참석|무대|오픈|티켓|공연|축제|라이브|컴백|앨범|단독|스페셜|by|the|and|in|of|live|tour)$/i;
 const WEEK_KO = ["일", "월", "화", "수", "목", "금", "토"];
+const FUTURE_W = /예정|한다|된다|개최|열린다|발매|출연|공개|진행|오픈|참석|나선다|펼친다|앞두|D-\d|첫\s?방송|방송된다|컴백/;
+const PAST_W = /했다|됐다|열렸|마쳤|성료|진행됐|공개됐|끝났|열린\s|가졌/;
 const addDays = (d: string, n: number) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400e3).toISOString().slice(0, 10);
 type Src = { text: string; link: string; date: string };
 
@@ -1270,6 +1321,7 @@ function dateRes(d: string): RegExp[] {
     new RegExp(`${y}-${String(m).padStart(2, "0")}-${String(dd).padStart(2, "0")}`, "g"),
     new RegExp(`(?<![\\d월.])0?${dd}\\s?일\\s?\\(?\\s?${wk}(?:요일)?\\s?\\)?`, "g"),
     new RegExp(`오는\\s?0?${dd}\\s?일`, "g"),
+    new RegExp(`(?<![\\d월./])0?${dd}\\s?일(?!\\s?(?:간|째|차|동안))`, "g"),
   ];
 }
 const titleWords = (t: string) => String(t || "").split(/vs\.?|[\s·()\[\]'"“”‘’,/!?~]+/i).map((w) => normText(w)).filter((w) => w.length >= 2 && !GENERIC_W.test(w));
@@ -1300,7 +1352,11 @@ function findEvidence(x: any, srcs: Src[], nameKey: string, today: string, prefe
         const win = s.text.slice(Math.max(0, m.index - 45), Math.min(s.text.length, m.index + m[0].length + 55));
         if (/(지난|전날)\s?$/.test(s.text.slice(Math.max(0, m.index - 4), m.index))) continue;
         if (GOSSIP.test(win)) continue;
-        if (r >= 3) { const base = s.date || today; if (!(x.date >= base && x.date <= addDays(base, 35))) continue; }
+        if (r >= 3) { const base = s.date || today; if (!(x.date >= base && x.date <= addDays(base, r === 5 ? 20 : 35))) continue; }
+        if (r === 5) { // '25일'만 있는 경우: 미래형 표현이 있고 바로 뒤가 과거형이 아니어야
+          const after = s.text.slice(m.index, m.index + m[0].length + 28);
+          if (!FUTURE_W.test(win) || PAST_W.test(after)) continue;
+        }
         const flat = normText(win);
         const ok = isMatch ? sides.every((sd) => flat.includes(sd.slice(0, 6))) : kw.test(win) || words.some((w) => flat.includes(w));
         if (ok) return s;
@@ -1544,7 +1600,7 @@ async function teamFixtures(sport: string, slug: string, team: any, info: any): 
   return { ok: true, items, team: String(team.displayName || "") };
 }
 
-const STAR_VER = "star:v6:";
+const STAR_VER = "star:v7:";
 async function buildStarFeed(name: string, sub = "") {
   const since = Date.now() - 60 * 86400e3;
   const queries = starQueries(name, sub);
@@ -1675,7 +1731,7 @@ ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 90)}`)
   if (sportsWhy) console.warn("[star sports]", name, sportsWhy);
   return {
     name, news, photos, schedule, status, basis: [...new Set(basis)], dropped, sub,
-    diag: { athlete, sports: athlete ? (espnOk ? `ok:${(sports as any).team || ""}` : sportsWhy) : "", ai: aiFailed ? "fail" : "ok", pool: pool.length, pages: pageTexts.length },
+    diag: { v: SERVER_VERSION, athlete, sports: athlete ? (espnOk ? `ok:${(sports as any).team || ""}` : sportsWhy) : "", ai: aiFailed ? `fail ${String(lastAi.gemini || "").slice(9, 40)} / ${String(lastAi.groq || "").slice(9, 40)}` : "ok", pool: pool.length, pages: pageTexts.length, dropped },
     partial: aiFailed || (athlete && !espnOk && /^ai:/.test(sportsWhy)), updatedAt: new Date().toISOString(),
   };
 }
