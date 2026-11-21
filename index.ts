@@ -17,8 +17,9 @@ const CFG = {
   // AI: OpenAI 호환 API (기본 Groq 무료 플랜). 다른 곳을 쓰려면 LLM_BASE_URL만 바꾸면 됨
   llmBase: (env("LLM_BASE_URL") || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
   llmKey: env("LLM_API_KEY") || env("GROQ_API_KEY"),
-  llmModel: env("LLM_MODEL") || "openai/gpt-oss-120b",          // 트렌드 정리
-  llmFastModel: env("LLM_FAST_MODEL") || "openai/gpt-oss-20b",   // 번역 (모델별 무료 한도가 따로라 분리)
+  // 무료 한도는 모델마다 따로 → 한 모델이 한도에 걸리면 다음 모델로 자동 전환
+  llmModels: (env("LLM_MODELS") || "openai/gpt-oss-120b,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.3-70b-versatile,openai/gpt-oss-20b").split(",").map((x: string) => x.trim()).filter(Boolean),
+  llmFastModels: (env("LLM_FAST_MODELS") || "openai/gpt-oss-20b,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.1-8b-instant,llama-3.3-70b-versatile").split(",").map((x: string) => x.trim()).filter(Boolean),
   llmSearchModel: env("LLM_SEARCH_MODEL") || "groq/compound",    // 네이버 키가 없을 때 웹 검색용
   naverId: env("NAVER_CLIENT_ID"),
   naverSecret: env("NAVER_CLIENT_SECRET"),
@@ -27,7 +28,8 @@ const CFG = {
   kakaoRest: env("KAKAO_REST_API_KEY"),
   googleTranslateKey: env("GOOGLE_TRANSLATE_API_KEY"),
   xBearer: env("X_BEARER_TOKEN"),
-  trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 10,
+  trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 180,
+  maxItems: 50,
   allowedOrigin: env("ALLOWED_ORIGIN") || "*",
 };
 const HAS_NAVER = !!(CFG.naverId && CFG.naverSecret);
@@ -147,31 +149,54 @@ async function checkUsage(userId: string, kind: string, max: number) {
   await rest("korrier_usage", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: userId, kind }) });
 }
 
-/* ---------------- AI (OpenAI 호환 Chat Completions) ---------------- */
-async function llm(prompt: string, { model = CFG.llmModel, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
-  if (!CFG.llmKey) throw new HttpError(503, "LLM_API_KEY 미설정");
+/* ---------------- AI (OpenAI 호환 Chat Completions, 모델 자동 전환) ---------------- */
+const deadModels = new Map<string, number>(); // 하루 한도 소진 / 사용 불가 모델 → 다시 시도할 시각
+async function llmOnce(model: string, prompt: string, json: boolean, temperature: number, maxTokens: number) {
   const body: any = { model, messages: [{ role: "user", content: prompt }], temperature, max_tokens: maxTokens };
   if (json && !model.startsWith("groq/compound")) body.response_format = { type: "json_object" };
   if (model.startsWith("openai/gpt-oss")) body.reasoning_effort = "low";
-  for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${CFG.llmBase}/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", Authorization: `Bearer ${CFG.llmKey}` },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90000),
-    });
-    const text = await res.text();
-    // 무료 플랜 분당 한도 초과 → 잠시 기다렸다 재시도
-    if ((res.status === 429 || res.status === 503) && attempt < 3) {
-      const wait = Math.min(20, Number(res.headers.get("retry-after")) || 6 * (attempt + 1));
-      await sleep(wait * 1000);
-      continue;
+  const res = await fetch(`${CFG.llmBase}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", Authorization: `Bearer ${CFG.llmKey}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90000),
+  });
+  const text = await res.text();
+  let data: any = {};
+  try { data = JSON.parse(text); } catch { /* */ }
+  return { res, data };
+}
+async function llm(prompt: string, { models = CFG.llmModels, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
+  if (!CFG.llmKey) throw new HttpError(503, "LLM_API_KEY 미설정");
+  let lastErr = "no_model";
+  for (let round = 0; round < 2; round++) {
+    let minWait = 60;
+    for (const model of models) {
+      if ((deadModels.get(model) || 0) > Date.now()) continue;
+      let r;
+      try { r = await llmOnce(model, prompt, json, temperature, maxTokens); } catch (e) { lastErr = (e as Error).message; continue; }
+      const { res, data } = r;
+      if (res.ok) {
+        const out = data?.choices?.[0]?.message?.content || "";
+        if (out) return out;
+        lastErr = "empty"; continue;
+      }
+      const msg = String(data?.error?.message || `HTTP ${res.status}`);
+      lastErr = `${model}: ${msg}`;
+      if (res.status === 429) {
+        const ra = Number(res.headers.get("retry-after")) || 0;
+        // 하루 한도(TPD/RPD)면 1시간 쉬게, 분당 한도면 다음 모델로
+        if (/per day|TPD|RPD/i.test(msg) || ra > 120) deadModels.set(model, Date.now() + 3600e3);
+        else minWait = Math.min(minWait, ra || 10);
+        continue;
+      }
+      if (res.status === 404 || res.status === 400 && /model|decommission/i.test(msg)) { deadModels.set(model, Date.now() + 6 * 3600e3); continue; }
+      if (res.status === 413 || res.status >= 500) continue; // 요청이 이 모델 분당 한도보다 큼 / 일시 장애 → 다음 모델
+      throw new HttpError(502, `AI: ${msg}`);
     }
-    let data: any = {};
-    try { data = JSON.parse(text); } catch { /* */ }
-    if (!res.ok) throw new HttpError(res.status === 429 ? 429 : 502, `AI: ${data?.error?.message || `HTTP ${res.status}`}`);
-    return data?.choices?.[0]?.message?.content || "";
+    if (round === 0) await sleep(Math.min(20, minWait) * 1000);
   }
+  throw new HttpError(429, `AI 한도 초과: ${lastErr}`);
 }
 
 /* ---------------- 네이버 (NAVER API HUB / 구 개발자센터) ---------------- */
@@ -295,7 +320,7 @@ async function translateStrings(texts: string[], lang: string): Promise<string[]
   let out: any;
   if (CFG.googleTranslateKey) out = await googleTranslate(texts, lang);
   else {
-    const text = await llm(`Translate each Korean string in "texts" into ${LANG_NAMES[lang]}. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Return JSON {"texts":[...]} with the same number of strings in the same order.\n${JSON.stringify({ texts })}`, { model: CFG.llmFastModel, temperature: 0.1, maxTokens: 2000 });
+    const text = await llm(`Translate each Korean string in "texts" into ${LANG_NAMES[lang]}. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Return JSON {"texts":[...]} with the same number of strings in the same order.\n${JSON.stringify({ texts })}`, { models: CFG.llmFastModels, temperature: 0.1, maxTokens: 2000 });
     const o = parseJsonLoose(text);
     out = Array.isArray(o) ? o : o?.texts;
   }
@@ -308,52 +333,83 @@ async function translateStrings(texts: string[], lang: string): Promise<string[]
 /* ---------------- 트렌드 정의 ---------------- */
 const COMMON_RULES = (today: string) => `
 오늘은 ${today} (한국 시간)입니다.
-반드시 Google 검색을 여러 번 실행해서 최근 7일 이내 X(트위터), 인스타그램, 틱톡, 유튜브, 네이버 블로그·카페·뉴스, 커뮤니티에서 실제로 언급이 많은 것만 고르세요.
-- 실존하지 않거나 확인되지 않은 정보는 절대 만들지 마세요. 확인 못 한 필드는 빈 문자열로 두세요.
-- 오래된(수개월 전) 유행은 제외하세요.
-- 결과는 JSON 배열 하나만 출력하세요. 설명 문장, 마크다운 금지.
-- 정확히 15개 항목, 화제성 높은 순서대로.`;
+웹 검색으로 최근 7일 이내 X, 인스타그램, 틱톡, 유튜브, 네이버 블로그·뉴스에서 실제로 언급이 많은 것만 고르세요.
+- 확인되지 않은 정보는 만들지 마세요. 모르는 필드는 빈 문자열.
+- 최대 30개, 화제성 높은 순서.`;
 
-const SPECS: Record<string, { ask: string; fields: string }> = {
+const PRODUCT_RULE = `
+- 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
+- 매장, 쇼핑몰·플랫폼 자체, 할인/쿠폰/세일/기획전/프로모션/이벤트/행사, 브랜드 소식, 랭킹 기사 제목은 절대 넣지 마세요.`;
+
+const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
   hotplace: {
-    ask: "지금 대한민국에서 가장 핫한 장소(동네, 거리, 팝업스토어, 매장, 카페, 전시, 명소) 15곳",
-    fields: '{"name":"장소 한국어 공식명","nameEn":"영문 표기","area":"시/도 + 구/군","address":"도로명 주소(모르면 빈 문자열)","summary":"지금 왜 화제인지 2~3문장(구체적인 최근 팝업/이벤트/이슈 포함)","searchKeyword":"네이버 검색용 핵심 검색어 1~3단어","sourceUrl":"근거 URL"}',
+    ask: "지금 대한민국에서 가장 핫한 장소(팝업스토어, 카페, 맛집, 전시, 거리, 명소)",
+    rule: "\n- 실제로 찾아갈 수 있는 구체적인 장소만. 지역 전체·행사명만 있는 것은 제외.",
+    fields: '{"name":"장소 공식명","nameEn":"영문","kind":"popup|cafe|food|exhibition|street|spot 중 하나","area":"시/도 구/군","address":"도로명 주소(모르면 빈 문자열)","summary":"왜 화제인지 1~2문장"}',
   },
   beauty: {
-    ask: "지금 한국에서 가장 많이 팔리고 SNS에서 화제인 뷰티 제품(올리브영 랭킹, 화해, SNS 바이럴 기준) 15개",
-    fields: '{"name":"브랜드 포함 한국어 정식 제품명","nameEn":"영문 제품명","brand":"브랜드","productType":"제품 종류","summary":"특징과 지금 인기 있는 이유 2~3문장","searchKeyword":"네이버 검색용(브랜드+제품 핵심명)","sourceUrl":"근거 URL"}',
+    ask: "지금 한국에서 가장 많이 팔리고 SNS에서 화제인 화장품·뷰티 제품",
+    rule: PRODUCT_RULE,
+    fields: '{"brand":"브랜드","name":"제품명(브랜드 제외)","nameEn":"영문 제품명","productType":"제품 종류","summary":"특징과 인기 이유 1~2문장"}',
   },
   "fashion-artist": {
-    ask: "최근 2주 이내에 K-POP 아이돌·배우가 실제로 착용해 화제가 된 패션 아이템 15개(공항패션, 무대의상, 패션위크, 화보, 인스타그램 게시물 등)",
-    fields: '{"artist":"아티스트명(그룹명)","brand":"브랜드","item":"아이템명","wornDate":"YYYY-MM-DD","wornWhere":"착용 장소/상황","price":"공식 판매가(원 단위, 모르면 빈 문자열)","summary":"착용 상황과 반응 2~3문장","searchKeyword":"브랜드+아이템 검색어","storeUrl":"브랜드 공식 홈페이지 URL","sourceUrl":"근거 기사/게시물 URL"}',
+    ask: "최근 2주 이내 K-POP 아이돌·한국 배우·한국 가수가 실제로 착용해 화제가 된 패션 제품",
+    rule: PRODUCT_RULE + "\n- 브랜드를 알 수 없는 착장(예: 그냥 '블랙 드레스')은 제외.",
+    fields: '{"artist":"착용한 한국 연예인(그룹)","brand":"브랜드","item":"제품명","wornDate":"YYYY-MM-DD","wornWhere":"착용 장소/상황","price":"판매가(모르면 빈 문자열)","summary":"착용 상황과 반응 1~2문장"}',
   },
   "fashion-musinsa": {
-    ask: "무신사(MUSINSA) 현재 랭킹 상위 및 최근 판매 급상승 상품 15개",
-    fields: '{"brand":"브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 2문장","searchKeyword":"브랜드+상품 핵심명","sourceUrl":"근거 URL"}',
+    ask: "무신사(MUSINSA)에서 지금 랭킹 상위·판매 급상승 중인 패션 상품",
+    rule: PRODUCT_RULE,
+    fields: '{"brand":"브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 1문장"}',
   },
   "fashion-ably": {
-    ask: "에이블리(ABLY) 현재 랭킹 상위 및 최근 판매 급상승 상품 15개",
-    fields: '{"brand":"마켓/브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 2문장","searchKeyword":"브랜드+상품 핵심명","sourceUrl":"근거 URL"}',
+    ask: "에이블리(ABLY)에서 지금 랭킹 상위·판매 급상승 중인 패션 상품",
+    rule: PRODUCT_RULE,
+    fields: '{"brand":"마켓/브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 1문장"}',
   },
   concert: {
-    ask: "오늘 이후(또는 현재 진행 중) 한국에서 열리는 콘서트·팬미팅 중 가장 화제인 15개",
-    fields: '{"title":"공연명","artist":"아티스트","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","ticketUrl":"예매 페이지 URL","summary":"공연 소개와 화제 포인트 2~3문장","searchKeyword":"아티스트+공연 검색어","sourceUrl":"근거 URL"}',
+    ask: "오늘 이후(또는 진행 중) 한국에서 열리는 K-POP 아이돌·한국 가수·한국 배우/방송인의 콘서트·팬미팅",
+    rule: `
+- 공연하는 주인공이 반드시 한국 연예인(K-POP 그룹/솔로, 유명 한국 가수, 한국 배우·방송인)이어야 합니다.
+- 클래식, 오케스트라, 송년음악회, 뮤지컬, 오페라, 합창, 해외 아티스트 내한, 출연진 없는 페스티벌은 제외.`,
+    fields: '{"artist":"아티스트(그룹/가수/배우) 이름","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
   },
   slang: {
-    ask: "최근 한 달 사이 한국 SNS(X, 인스타그램, 틱톡, 유튜브 쇼츠, 커뮤니티)에서 실제로 많이 쓰이는 유행어·신조어 15개",
-    fields: '{"word":"유행어","romanization":"국어의 로마자 표기법, 음절을 하이픈으로 구분(예: Jung-ji-jeong)","meaning":"짧은 뜻(15자 이내)","example":"자연스러운 한국어 예문 1개","nuance":"의미와 뉘앙스, 유래 2~3문장","searchKeyword":"검색어"}',
+    ask: "최근 한 달 한국 SNS·커뮤니티에서 실제로 많이 쓰이는 유행어·신조어",
+    fields: '{"word":"유행어","romanization":"로마자 표기, 음절을 하이픈으로(예: Jung-ji-jeong)","meaning":"짧은 뜻(15자 이내)","example":"한국어 예문 1개","nuance":"의미·뉘앙스·유래 1~2문장"}',
   },
 };
 
+/** 제품 탭에 섞여 들어오는 행사·매장·프로모션 제거 */
+const NOT_PRODUCT = /할인|쿠폰|세일|기획전|프로모션|이벤트|행사|매장|스토어 오픈|오픈|팝업|블랙프라이데이|광군제|페스타|랭킹|콘텐츠|무료배송|적립|특가|위크|브랜드데이/;
+const PLATFORM = /^(에이블리|ABLY|무신사|MUSINSA|올리브영|OLIVE ?YOUNG|지그재그|29CM|W컨셉)$/i;
+const NOT_KCONCERT = /오케스트라|클래식|교향|필하모닉|송년음악회|신년음악회|뮤지컬|오페라|합창|발레|국악관현악/;
+function validCandidate(cat: string, c: any): boolean {
+  const s = (v: unknown) => String(v || "").trim();
+  if (cat === "beauty") {
+    return !!(s(c.brand) && s(c.name)) && !PLATFORM.test(s(c.brand)) && !NOT_PRODUCT.test(`${c.brand} ${c.name}`);
+  }
+  if (cat.startsWith("fashion")) {
+    if (!s(c.brand) || !s(c.item) || PLATFORM.test(s(c.brand)) || NOT_PRODUCT.test(`${c.brand} ${c.item}`)) return false;
+    if (cat === "fashion-artist" && !s(c.artist)) return false;
+    return true;
+  }
+  if (cat === "concert") return !!(s(c.artist) && s(c.title)) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
+  if (cat === "hotplace") return !!s(c.name);
+  if (cat === "slang") return !!s(c.word);
+  return true;
+}
+
 function keyOf(cat: string, c: any): string {
   if (cat === "slang") return c.word;
-  if (cat === "concert") return c.title;
+  if (cat === "concert") return `${c.artist || ""} ${c.title || ""}`.trim();
+  if (cat === "beauty") return `${c.brand || ""} ${c.name || ""}`.trim();
   if (cat.startsWith("fashion")) return `${c.artist || ""} ${c.brand || ""} ${c.item || ""}`.trim();
   return c.name;
 }
 
 function baseItem(cat: string, c: any): any {
-  const keyword = String(c.searchKeyword || keyOf(cat, c) || "").trim();
+  const keyword = String(c.searchKeyword || (cat.startsWith("fashion") ? `${c.brand || ""} ${c.item || ""}` : cat === "slang" ? c.word : keyOf(cat, c)) || "").trim();
   const item: any = {
     id: hashId(cat + "|" + keyOf(cat, c)), cat, keyword,
     title: "", subtitle: "", desc: c.summary || "", tag: "", link: "", linkKind: "web",
@@ -362,10 +418,10 @@ function baseItem(cat: string, c: any): any {
   };
   switch (cat) {
     case "hotplace":
-      Object.assign(item, { title: c.name, subtitle: c.nameEn || "", tag: c.area || "", linkKind: "map", location: { name: c.name, address: c.address || c.area || "" } });
+      Object.assign(item, { title: c.name, subtitle: c.nameEn || "", tag: c.area || "", linkKind: "map", kind: ["popup", "cafe", "food", "exhibition", "street", "spot"].includes(c.kind) ? c.kind : "spot", location: { name: c.name, address: c.address || "", area: c.area || "" } });
       break;
     case "beauty":
-      Object.assign(item, { title: c.name, subtitle: c.nameEn || c.brand || "", tag: c.productType || "", linkKind: "store" });
+      Object.assign(item, { title: `${c.brand} ${c.name}`.trim(), subtitle: c.nameEn || "", tag: c.productType || "", brand: c.brand || "", linkKind: "store" });
       break;
     case "fashion-artist":
       Object.assign(item, {
@@ -384,7 +440,7 @@ function baseItem(cat: string, c: any): any {
       break;
     case "concert":
       Object.assign(item, {
-        title: c.title, subtitle: [c.venue, c.city].filter(Boolean).join(" · "), tag: c.artist || "",
+        title: c.artist, subtitle: c.title, tag: [c.venue, c.city].filter(Boolean).join(" · "),
         dates: { start: c.startDate || "", end: c.endDate || c.startDate || "" },
         location: { name: c.venue || "", address: c.city || "" },
         link: isHttpUrl(c.ticketUrl) ? c.ticketUrl : "", linkKind: "ticket", ticketVendor: c.ticketVendor || "",
@@ -452,11 +508,7 @@ async function enrichItem(it: any) {
     it.shop = { compareUrl: shopCompareUrl(it.keyword) };
     if (it.cat === "beauty") it.link = shopCompareUrl(it.keyword);
   }
-  if (it.location?.name) {
-    tasks.push(kakaoFirstPlace(it.location.name).then((p) => {
-      if (p) Object.assign(it.location, { address: p.address || it.location.address, lat: p.lat, lng: p.lng, kakaoUrl: p.url });
-    }).catch(() => {}));
-  }
+  if (it.location?.name) tasks.push(locate(it.location).catch(() => {}));
   await Promise.all(tasks);
   if (it.cat === "hotplace") {
     const q = it.location?.lat ? `${it.location.lat},${it.location.lng}` : it.title;
@@ -466,18 +518,33 @@ async function enrichItem(it: any) {
   return it;
 }
 
+/** 장소 좌표 찾기: 이름 → (지역+이름) → 주소 순서 */
+async function locate(loc: any) {
+  if (!CFG.kakaoRest) return;
+  const tries = [loc.area ? `${loc.area} ${loc.name}` : "", loc.name].filter(Boolean);
+  for (const q of tries) {
+    const p = await kakaoFirstPlace(q).catch(() => null);
+    if (p) { Object.assign(loc, { address: p.address || loc.address, lat: p.lat, lng: p.lng, kakaoUrl: p.url, category: p.category }); return; }
+  }
+  if (loc.address) {
+    const r = await kakao("/v2/local/search/address.json", { query: loc.address, size: 1 }).catch(() => null);
+    const d = r?.documents?.[0];
+    if (d) Object.assign(loc, { lat: Number(d.y), lng: Number(d.x) });
+  }
+}
+
 /* ---------- 실제 최신 글 수집 (네이버 뉴스·블로그 최근 7일) ---------- */
 const SEEDS: Record<string, string[]> = {
-  hotplace: ["팝업스토어 오픈", "핫플 웨이팅", "요즘 핫플"],
-  beauty: ["올리브영 랭킹", "품절 대란 화장품", "뷰티 신상 인기"],
-  "fashion-artist": ["공항패션 착용", "아이돌 착용 브랜드", "사복 패션 화제"],
-  "fashion-musinsa": ["무신사 랭킹", "무신사 인기 상품"],
-  "fashion-ably": ["에이블리 랭킹", "에이블리 인기 상품"],
-  concert: ["콘서트 티켓 오픈", "팬미팅 개최", "내한 공연 확정"],
-  slang: ["신조어 뜻", "요즘 유행어", "MZ 유행어"],
+  hotplace: ["팝업스토어 오픈", "핫플 웨이팅", "요즘 핫플", "성수 팝업", "신상 카페 웨이팅", "전시 오픈 화제"],
+  beauty: ["올리브영 랭킹 1위", "품절 대란 화장품", "올리브영 추천템", "선크림 인기", "쿠션 인기 제품", "립 신상 인기"],
+  "fashion-artist": ["공항패션 착용 브랜드", "아이돌 착용 제품", "착용해 화제 브랜드", "사복 패션 정보", "배우 착용 가방"],
+  "fashion-musinsa": ["무신사 랭킹 1위", "무신사 인기 상품", "무신사 품절", "무신사 추천템"],
+  "fashion-ably": ["에이블리 랭킹 1위", "에이블리 인기 상품", "에이블리 추천템", "에이블리 구매 후기"],
+  concert: ["단독 콘서트 개최", "팬미팅 개최 확정", "아이돌 콘서트 티켓 오픈", "월드투어 서울 공연", "전국투어 콘서트", "배우 팬미팅"],
+  slang: ["신조어 뜻", "요즘 유행어", "MZ 유행어", "밈 뜻", "유행어 뜻 무슨 뜻"],
 };
 type Snip = { t: string; d: string; link: string; kind: string; date: string };
-async function collectSnippets(queries: string[], perQuery = 30, max = 26): Promise<Snip[]> {
+async function collectSnippets(queries: string[], perQuery = 40, max = 70): Promise<Snip[]> {
   const since = Date.now() - 7 * 86400e3;
   const sinceBlog = seoulDate(-7).replace(/-/g, "");
   const lists = await mapLimit(queries, 3, async (q) => {
@@ -507,7 +574,7 @@ async function collectSnippets(queries: string[], perQuery = 30, max = 26): Prom
   }
   return out;
 }
-const snipText = (snips: Snip[]) => snips.map((x, i) => `[${i}] (${x.kind} ${x.date}) ${x.t} — ${x.d.slice(0, 80)}`).join("\n");
+const snipText = (snips: Snip[]) => snips.map((x, i) => `[${i}] (${x.kind} ${x.date}) ${x.t} — ${x.d.slice(0, 55)}`).join("\n");
 
 async function buildTrends(cat: string) {
   const spec = SPECS[cat];
@@ -524,17 +591,17 @@ async function buildTrends(cat: string) {
     snips = await collectSnippets(SEEDS[cat]);
     if (snips.length < 5) throw new HttpError(502, "not_enough_data");
     text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 7일 동안 실제로 올라온 네이버 뉴스·블로그 글 목록입니다.${hint}
-이 자료에 나온 내용만 근거로 ${spec.ask.replace("15개", "12개").replace("15곳", "12곳")}을(를) 화제성 높은 순서로 골라주세요.
-- 자료에 없는 것은 절대 만들지 마세요. 모르는 필드는 빈 문자열.
-- 여러 글에 반복해서 나온 것을 우선하세요.
-- 각 항목에 근거가 된 글 번호를 "refs":[번호] 로 넣으세요.
+이 자료에 나온 내용만 근거로 ${spec.ask}을(를) 최대 50개, 화제성 높은 순서로 골라주세요.${spec.rule || ""}
+- 자료에 없는 것은 절대 만들지 마세요. 모르는 필드는 빈 문자열. 같은 대상은 한 번만.
+- 여러 글에 반복해서 나온 것을 우선하세요. 문장은 짧게.
+- 각 항목에 근거 글 번호를 "refs":[번호] 로 넣으세요.
 - 결과는 {"items":[...]} 형태의 JSON 하나만 출력하세요.
-각 항목 형식: ${spec.fields.replace(/,"sourceUrl":"[^"]*"/, "")} + "refs"
+각 항목 형식: ${spec.fields} + "refs"
 
 자료:
-${snipText(snips)}`, { maxTokens: 3000 });
+${snipText(snips)}`, { maxTokens: 6000 });
   } else {
-    text = await llm(`${spec.ask}을(를) 웹 검색으로 찾아주세요.${COMMON_RULES(today)}${hint}\n결과는 {"items":[...]} 형태 JSON 하나만. 각 항목 형식: ${spec.fields}`, { model: CFG.llmSearchModel, maxTokens: 4000 });
+    text = await llm(`${spec.ask}을(를) 웹 검색으로 찾아주세요.${COMMON_RULES(today)}${spec.rule || ""}${hint}\n결과는 {"items":[...]} 형태 JSON 하나만. 각 항목 형식: ${spec.fields}`, { models: [CFG.llmSearchModel], maxTokens: 4000 });
   }
   const parsed = parseJsonLoose(text);
   let cands = Array.isArray(parsed) ? parsed : parsed?.items;
@@ -547,13 +614,14 @@ ${snipText(snips)}`, { maxTokens: 3000 });
     if (!c.sourceUrl && refs.length) c.sourceUrl = snips[refs[0]].link;
   });
   sources = [...used].slice(0, 12).map((n) => ({ title: snips[n].t, uri: snips[n].link }));
-  cands = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c));
+  cands = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
+  if (!cands.length) throw new HttpError(502, "no_valid_items");
   if (cat === "concert") cands = cands.filter((c: any) => !c.endDate || c.endDate >= today);
   const seen = new Set<string>();
   let items = cands.map((c: any) => baseItem(cat, c)).filter((it: any) => (seen.has(it.id) ? false : (seen.add(it.id), true)));
   const scored = await scoreItems(items);
-  items = scored.items.slice(0, 10);
-  await mapLimit(items, 4, enrichItem);
+  items = scored.items.slice(0, CFG.maxItems);
+  await mapLimit(items, 6, enrichItem);
   items.forEach((it: any, i: number) => { it.rank = i + 1; });
   return { cat, items, sources: sources.slice(0, 12), basis: scored.basis, updatedAt: new Date().toISOString() };
 }
@@ -564,7 +632,7 @@ async function translateTrend(result: any, lang: string) {
   const hit = await cacheGet(ck);
   if (hit?.data && hit.data.updatedAt === result.updatedAt) return hit.data;
 
-  const payload = result.items.map((it: any) => {
+  const payloadAll = result.items.map((it: any) => {
     const p: any = { id: it.id, desc: it.desc, tag: it.tag };
     if (it.cat === "slang") { p.meaning = it.slang.meaning; p.example = it.slang.example; p.pron = it.title; }
     else { p.title = it.title; if (it.cat === "concert" || it.cat === "fashion-artist") p.subtitle = it.subtitle; }
@@ -578,11 +646,19 @@ Rules:
 - "example": translate the Korean example sentence naturally.
 - "pron": write how the Korean word sounds using ${PRON_RULE[lang]}.
 - Dates and prices stay as they are.
-${JSON.stringify({ items: payload })}`;
-  const text = await llm(prompt, { model: CFG.llmFastModel, temperature: 0.2, maxTokens: 4000 });
-  const parsedTr = parseJsonLoose(text);
-  const arr = Array.isArray(parsedTr) ? parsedTr : parsedTr?.items;
-  if (!Array.isArray(arr)) throw new HttpError(502, "translate_parse_failed");
+`;
+  // 무료 플랜 분당 토큰 한도 때문에 10개씩 나눠 번역
+  const arr: any[] = [];
+  for (let i = 0; i < payloadAll.length; i += 10) {
+    const chunk = payloadAll.slice(i, i + 10);
+    try {
+      const text = await llm(prompt + JSON.stringify({ items: chunk }), { models: CFG.llmFastModels, temperature: 0.2, maxTokens: 3000 });
+      const parsedTr = parseJsonLoose(text);
+      const part = Array.isArray(parsedTr) ? parsedTr : parsedTr?.items;
+      if (Array.isArray(part)) arr.push(...part);
+    } catch (e) { if (!arr.length && i === 0) throw e; }
+  }
+  if (!arr.length) throw new HttpError(502, "translate_parse_failed");
   const byId = new Map(arr.map((x: any) => [x.id, x]));
   const items = result.items.map((it: any) => {
     const t: any = byId.get(it.id) || {};
@@ -606,6 +682,25 @@ ${JSON.stringify({ items: payload })}`;
   return out;
 }
 
+/** 응답을 먼저 보내고 뒤에서 계속 작업 (Supabase Edge Runtime) */
+function background(p: Promise<unknown>) {
+  const rt = (globalThis as any).EdgeRuntime;
+  const safe = p.catch((e) => console.warn("[bg]", (e as Error).message));
+  if (rt?.waitUntil) rt.waitUntil(safe);
+}
+async function rebuild(cat: string) {
+  const key = `trend:${cat}`;
+  if (!(await tryLock(key))) return false;
+  try {
+    const base = await buildTrends(cat);
+    await cacheSet(key, base);
+    return true;
+  } catch (e) {
+    await unlock(key);
+    throw e;
+  }
+}
+
 async function getTrends(cat: string, lang: string, force: boolean) {
   if (!SPECS[cat]) throw new HttpError(404, "unknown_category");
   const key = `trend:${cat}`;
@@ -613,30 +708,35 @@ async function getTrends(cat: string, lang: string, force: boolean) {
   let row = await cacheGet(key);
   let base = row?.data || null;
   const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
-  let stale = false;
-  if (!base || age > ttl || (force && age > 2 * 60e3)) {
-    if (await tryLock(key)) {
-      try {
-        base = await buildTrends(cat);
-        await cacheSet(key, base);
-      } catch (e) {
-        await unlock(key);
-        if (!base) throw e;
-        console.warn("[trends] refresh failed, serving cache:", (e as Error).message);
-        stale = true;
-      }
-    } else if (!base) {
-      // 다른 요청이 검색 중 → 결과를 기다림 (최대 100초)
-      for (let i = 0; i < 50 && !base; i++) {
-        await sleep(2000);
-        row = await cacheGet(key);
-        base = row?.data || null;
-      }
+  let refreshing = false;
+  if (!base) {
+    // 첫 검색: 직접 만들거나, 다른 요청이 만드는 중이면 기다림
+    if (!(await rebuild(cat))) {
+      for (let i = 0; i < 60 && !base; i++) { await sleep(2000); row = await cacheGet(key); base = row?.data || null; }
       if (!base) throw new HttpError(504, "trend_timeout");
     }
+    base = base || (await cacheGet(key))?.data;
+  } else if (age > ttl || (force && age > 10 * 60e3)) {
+    // 오래된 결과는 바로 보여주고, 뒤에서 새로 검색
+    refreshing = true;
+    background(rebuild(cat));
   }
   const out = await translateTrend(base, lang);
-  return { ...out, stale, nextRefreshAt: new Date(Date.parse(base.updatedAt) + ttl).toISOString() };
+  return { ...out, refreshing, nextRefreshAt: new Date(Date.parse(base.updatedAt) + ttl).toISOString() };
+}
+
+/** 예약 작업(pg_cron)이 호출: 가장 오래된 카테고리 하나를 새로 검색 */
+async function warmOne() {
+  const cats = Object.keys(SPECS);
+  const ages = await Promise.all(cats.map(async (c) => {
+    const r = await cacheGet(`trend:${c}`).catch(() => null);
+    return { c, at: r?.data?.updatedAt ? Date.parse(r.data.updatedAt) : 0 };
+  }));
+  ages.sort((a, b) => a.at - b.at);
+  const target = ages[0];
+  if (target.at && Date.now() - target.at < 15 * 60e3) return { skipped: true };
+  background(rebuild(target.c));
+  return { warming: target.c };
 }
 
 /* ---------------- AI 여론 요약 ---------------- */
@@ -656,7 +756,7 @@ async function aiOpinion(keyword: string, title: string, lang: string) {
 ${basisText} ${LANG_NAMES[lang]}로 작성하고, 다음 JSON 객체 하나만 출력하세요:
 {"summary":"전체 여론 요약 4~5문장(구체적 근거 포함)","rating":1.0~5.0 사이 숫자(실제 반응의 긍정 비율 기반, 소수점 1자리),"positives":["긍정 포인트 최대 3개"],"negatives":["부정/주의 포인트 최대 3개"],"tip":"방문·구매·참여 전 실용 팁 1문장"}
 근거를 찾지 못하면 summary에 그렇다고 쓰고 rating은 null로 두세요.${snips.length ? "\n\n자료:\n" + snipText(snips) : ""}`;
-  const text = await llm(prompt, { model: snips.length ? CFG.llmModel : CFG.llmSearchModel, maxTokens: 1500 });
+  const text = await llm(prompt, { models: snips.length ? CFG.llmModels : [CFG.llmSearchModel], maxTokens: 1500 });
   const sources = snips.slice(0, 8).map((x) => ({ title: x.t, uri: x.link }));
   const obj = parseJsonLoose(text);
   if (!obj || typeof obj !== "object") throw new HttpError(502, "ai_parse_failed");
@@ -696,6 +796,8 @@ async function handle(req: Request) {
       };
     case "trends":
       return getTrends(String(body.cat || ""), langOf(body.lang), body.force === true);
+    case "warm":
+      return warmOne();
     case "opinion": {
       const user = await getUser(req);
       if (!user) throw new HttpError(401, "login_required");
@@ -713,7 +815,7 @@ async function handle(req: Request) {
       const q = String(body.q || "").trim();
       if (!q) return { places: [] };
       const page = Math.min(45, Math.max(1, Number(body.page) || 1));
-      const base = { query: q, page, size: 15, sort: "accuracy" };
+      const base = { query: q, page, size: 15, sort: body.sort === "distance" && body.lat ? "distance" : "accuracy" };
       let r;
       if (body.lat && body.lng) {
         r = await kakao("/v2/local/search/keyword.json", { ...base, x: body.lng, y: body.lat, radius: 20000 });

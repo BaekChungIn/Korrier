@@ -37,7 +37,12 @@ const S = {
   placeType: 'spot',
   placeSel: null,
   wiz: null,
-  map: { kind: null, obj: null, el: null, layers: [], gmFailed: false },
+  shown: {},
+  layers: { oy: true, hot: true, popup: true, venue: true },
+  oyPois: null,
+  oyKey: '',
+  hotFilter: 'all',
+  hotSel: null,
   detail: null,
   authMode: 'login',
 };
@@ -232,6 +237,7 @@ function changeLanguage(code) {
   refreshAllText();
   if (S.user && sb) sb.from('korrier_profiles').update({ lang: code }).eq('id', S.user.id).then(() => {});
   if (S.tab === 'map') renderMapView(); else { renderList(); loadTrends(false); }
+  prefetchAll();
   if (S.detail) renderDetail();
   toast(t('toast_langChanged'), 'globe');
 }
@@ -251,7 +257,15 @@ function setAuto(min, notify) {
   localStorage.setItem(LS.auto, String(min));
   clearInterval(S.autoTimer);
   S.autoTimer = null;
-  if (min > 0) S.autoTimer = setInterval(() => { if (S.tab !== 'map') loadTrends(true, true); }, min * 60e3);
+  if (min > 0) S.autoTimer = setInterval(async () => {
+    if (S.tab === 'map') return;
+    const cat = catKey(); const lang = S.lang;
+    const old = S.trends[`${cat}|${lang}`];
+    try {
+      const d = await fetchCat(cat, lang, false);
+      if ((!old || old.updatedAt !== d.updatedAt) && catKey() === cat && S.lang === lang) { renderList(); toast(t('toast_refreshed'), 'refresh'); }
+    } catch {}
+  }, min * 60e3);
   renderAutoMenu();
   $('#autoMenu').classList.add('hidden');
   if (notify) toast(t('toast_autoSet', { v: autoLabel(min) }), 'timer');
@@ -274,29 +288,65 @@ function relTime(iso) {
 }
 
 /* ---------------- 트렌드 로딩 ---------------- */
+const ALL_CATS = ['hotplace', 'beauty', 'fashion-artist', 'fashion-musinsa', 'fashion-ably', 'concert', 'slang'];
+const trendData = (cat) => S.trends[`${cat}|${S.lang}`] || S.trends[`${cat}|ko`];
+
+/** 한 카테고리 불러오기 (같은 요청은 한 번만) */
+function fetchCat(cat, lang, force) {
+  const key = `${cat}|${lang}`;
+  if (S.loading[key]) return S.loading[key];
+  delete S.errors[key];
+  const p = (async () => {
+    try {
+      const data = await fn('trends', { cat, lang, force: !!force });
+      S.trends[key] = data;
+      // 서버가 오래된 결과를 주고 뒤에서 새로 검색 중이면 잠시 뒤 다시 받아옴
+      if (data.refreshing) setTimeout(() => fetchCat(cat, lang, false).then(() => afterFetch(cat, lang)).catch(() => {}), 45000);
+      return data;
+    } catch (e) { S.errors[key] = e; throw e; }
+    finally { delete S.loading[key]; }
+  })();
+  S.loading[key] = p;
+  return p;
+}
+function afterFetch(cat, lang) {
+  if (S.lang !== lang) return;
+  if (S.tab !== 'map' && catKey() === cat) renderList();
+  if ((cat === 'hotplace' || cat === 'concert')) {
+    if (S.tab === 'map' && S.trip) { renderLayerChips(); drawMap(false); }
+    if (!$('#hotMapOverlay').classList.contains('hidden') && cat === 'hotplace') drawHotMap(false);
+  }
+}
+/** 앱을 열면 모든 탭을 미리 검색해 둠 */
+async function prefetchAll() {
+  const lang = S.lang;
+  const queue = ALL_CATS.filter((c) => !S.trends[`${c}|${lang}`]);
+  let i = 0;
+  const worker = async () => {
+    while (i < queue.length && S.lang === lang) {
+      const c = queue[i++];
+      try { await fetchCat(c, lang, false); } catch {}
+      afterFetch(c, lang);
+    }
+  };
+  await Promise.all([worker(), worker()]);
+}
+
 async function loadTrends(force, silent) {
   const cat = catKey();
   const lang = S.lang;
   const key = `${cat}|${lang}`;
   const cached = S.trends[key];
   if (!force && cached && Date.parse(cached.nextRefreshAt) > Date.now()) { renderList(); return; }
-  if (S.loading[key]) return;
-  S.loading[key] = true;
-  delete S.errors[key];
   $('#refreshIcon').classList.add('animate-spin');
+  const p = fetchCat(cat, lang, force);
   renderList();
   try {
-    const data = await fn('trends', { cat, lang, force: !!force });
-    const changed = !cached || cached.updatedAt !== data.updatedAt;
-    S.trends[key] = data;
+    await p;
     if (force && !silent) toast(t('toast_refreshed'), 'refresh');
-    else if (force && silent && changed) toast(t('toast_refreshed'), 'refresh');
-  } catch (e) {
-    S.errors[key] = e;
-  } finally {
-    S.loading[key] = false;
+  } catch {} finally {
     $('#refreshIcon').classList.remove('animate-spin');
-    if (catKey() === cat && S.lang === lang && S.tab !== 'map') renderList();
+    afterFetch(cat, lang);
   }
 }
 $('#btnRefresh').onclick = () => { if (S.tab === 'map') { renderMapView(); toast(t('toast_refreshed'), 'refresh'); } else loadTrends(true); };
@@ -333,8 +383,13 @@ function renderList() {
   if (!data.items || !data.items.length) { area.innerHTML = `<div class="text-center text-[13px] text-[#8E8E93] py-10">${esc(t('empty'))}</div>`; return; }
 
   const errBanner = err ? `<div class="bg-amber-50 border border-amber-100 text-amber-800 text-[12px] rounded-2xl px-4 py-2.5 flex items-center gap-2">${icon('alert', 'w-4 h-4')}<span>${esc(errText(err))}</span></div>` : '';
-  const body = cat === 'slang' ? slangHtml(data.items) : data.items.map(cardHtml).join('');
-  area.innerHTML = errBanner + body + sourcesHtml(data.sources);
+  const total = data.items.length;
+  const shown = Math.min(total, S.shown[cat] || 10);
+  const items = data.items.slice(0, shown);
+  const body = cat === 'slang' ? slangHtml(items) : items.map(cardHtml).join('');
+  const more = total > shown ? `<button data-more="${esc(cat)}" class="w-full py-3.5 rounded-[22px] bg-white border border-black/[0.05] text-[14px] font-semibold flex items-center justify-center gap-1.5 active:scale-[0.99] transition">${icon('chevD', 'w-4 h-4')}${esc(t('more', { a: shown + 1, b: Math.min(total, shown + 10), n: total }))}</button>` : '';
+  const hotBtn = cat === 'hotplace' ? hotMapButtonHtml(data) : '';
+  area.innerHTML = errBanner + hotBtn + body + more + sourcesHtml(data.sources);
   if (cat === 'slang') bindSlangCarousel();
 }
 
@@ -368,6 +423,15 @@ function sourcesHtml(sources) {
   </details>`;
 }
 
+function hotMapButtonHtml(data) {
+  const n = data.items.filter((it) => it.location && it.location.lat).length;
+  return `<button data-hotmap="1" class="w-full text-left bg-white rounded-[24px] p-4 border border-black/[0.04] shadow-[0_2px_14px_rgba(0,0,0,0.03)] flex items-center gap-3 active:scale-[0.99] transition">
+    <span class="w-12 h-12 rounded-2xl bg-[#FFF1E6] text-[#F97316] flex items-center justify-center shrink-0">${icon('map', 'w-6 h-6')}</span>
+    <span class="flex-1 min-w-0"><span class="block text-[15px] font-bold">${esc(t('hotMap'))}</span><span class="block text-[12px] text-[#8E8E93]">${esc(t('hotMapDesc', { n }))}</span></span>
+    <span class="text-[#C7C7CC]">${icon('chevR', 'w-5 h-5')}</span>
+  </button>`;
+}
+
 function cardHtml(it) {
   const st = CAT_STYLE[it.cat] || CAT_STYLE.hotplace;
   let tag = '';
@@ -384,8 +448,9 @@ function cardHtml(it) {
       <div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold shrink-0" style="background:${st.bg};color:${st.fg}">${it.rank}</div>
       <div class="flex-1 min-w-0">
         ${tag ? `<div class="mb-1.5">${tag}</div>` : ''}
-        <h4 class="text-[17px] font-semibold tracking-tight leading-snug truncate">${esc(it.title)}</h4>
-        ${it.subtitle ? `<p class="text-[13px] font-medium mt-0.5 truncate" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
+        <h4 class="${it.cat === 'concert' ? 'text-[20px] font-bold' : 'text-[17px] font-semibold'} tracking-tight leading-snug truncate">${esc(it.title)}</h4>
+        ${it.subtitle ? `<p class="${it.cat === 'concert' ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'} mt-0.5 truncate" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
+        ${it.cat === 'concert' && it.tag ? `<p class="text-[12px] text-[#6E6E73] mt-1 truncate flex items-center gap-1">${icon('pin', 'w-3.5 h-3.5 shrink-0')}${esc(it.tag)}</p>` : ''}
         <p class="text-[13px] text-[#8E8E93] font-light mt-1.5 line-clamp-2 leading-relaxed">${esc(it.desc)}</p>
         <div class="flex items-center gap-3 mt-2 text-[11px] text-[#AEAEB2]">
           <span class="inline-flex items-center gap-1">${icon('trend', 'w-3 h-3')}${esc(t('score', { n: it.score ?? '-' }))}</span>${price}
@@ -423,7 +488,7 @@ function slangHtml(items) {
     <div id="slangCarousel" class="flex gap-3 overflow-x-auto snap-x-mandatory no-scrollbar scroll-smooth">${cards}</div>
     <div class="flex items-center justify-between mt-3 px-1">
       <button id="slangPrev" class="w-9 h-9 rounded-full bg-white border border-black/[0.06] flex items-center justify-center">${icon('chevL', 'w-4 h-4')}</button>
-      <div id="slangDots" class="flex items-center gap-1.5">${items.map((_, i) => `<span class="h-1.5 rounded-full transition-all ${i === 0 ? 'w-5 bg-[#5CB85F]' : 'w-1.5 bg-[#D1D1D6]'}"></span>`).join('')}</div>
+      <div id="slangDots" class="text-[13px] font-semibold text-[#5CB85F]">1 / ${items.length}</div>
       <button id="slangNext" class="w-9 h-9 rounded-full bg-white border border-black/[0.06] flex items-center justify-center">${icon('chevR', 'w-4 h-4')}</button>
     </div>
   </div>`;
@@ -431,11 +496,12 @@ function slangHtml(items) {
 function bindSlangCarousel() {
   const car = $('#slangCarousel');
   if (!car) return;
-  const dots = $$('#slangDots span');
+  const n = car.children.length;
   const update = () => {
     const i = Math.round(car.scrollLeft / (car.clientWidth + 12));
-    dots.forEach((d, k) => { d.className = `h-1.5 rounded-full transition-all ${k === i ? 'w-5 bg-[#5CB85F]' : 'w-1.5 bg-[#D1D1D6]'}`; });
+    $('#slangDots').textContent = `${Math.min(n, i + 1)} / ${n}`;
   };
+  if (S.slangJump) { const j = S.slangJump; S.slangJump = 0; car.style.scrollBehavior = 'auto'; car.scrollLeft = j * (car.clientWidth + 12); car.style.scrollBehavior = ''; update(); }
   car.addEventListener('scroll', debounce(update, 60));
   $('#slangPrev').onclick = () => car.scrollBy({ left: -(car.clientWidth + 12), behavior: 'smooth' });
   $('#slangNext').onclick = () => car.scrollBy({ left: car.clientWidth + 12, behavior: 'smooth' });
@@ -446,6 +512,16 @@ function findItem(id) {
   return data && data.items.find((x) => x.id === id);
 }
 $('#listArea').addEventListener('click', (e) => {
+  const more = e.target.closest('[data-more]');
+  if (more) {
+    const cat = more.dataset.more;
+    const prev = S.shown[cat] || 10;
+    S.shown[cat] = prev + 10;
+    if (cat === 'slang') S.slangJump = prev;
+    renderList();
+    return;
+  }
+  if (e.target.closest('[data-hotmap]')) { openHotMap(); return; }
   const ai = e.target.closest('[data-ai]');
   if (ai) { const it = findItem(ai.dataset.ai); if (it) { openDetail(it); fetchOpinion(); } return; }
   const card = e.target.closest('[data-item]');
@@ -606,7 +682,7 @@ $('#detailBody').addEventListener('click', (e) => {
 function addDetailToTrip() {
   const it = S.detail && S.detail.it;
   if (!it || !it.location) return;
-  if (!S.trip || S.tripReadOnly) { toast(t('toast_needTrip'), 'info'); closeDetail(); selectTab('map'); return; }
+  if (!S.trip || S.tripReadOnly) { toast(t('toast_needTrip'), 'info'); closeDetail(); closeHotMap(); selectTab('map'); return; }
   const day = S.planDay;
   const list = S.trip.days[day] || (S.trip.days[day] = []);
   list.push({
@@ -1019,7 +1095,9 @@ function renderTripActive() {
     const cnt = (tr.days[k] || []).length;
     return `<button data-day="${k}" class="px-4 py-1.5 rounded-full text-[12px] font-medium shrink-0 transition flex items-center gap-1.5 ${on ? 'bg-[#0071E3] text-white' : 'bg-white text-[#6E6E73] border border-black/[0.08]'}">${esc(dayLabel(k))}${cnt ? `<span class="text-[10px] ${on ? 'bg-white/25' : 'bg-[#F2F2F7]'} rounded-full px-1.5">${cnt}</span>` : ''}</button>`;
   }).join('');
+  renderLayerChips();
   renderTimeline();
+  loadOliveYoung();
   if (!tr.region.name) return;
   translateDom($('#tripActive'));
   if (S.lang !== 'ko' && !REGIONS.some((x) => x.ko === tr.region.name) && !dynCache.has(S.lang + '|' + tr.region.name)) {
@@ -1068,7 +1146,7 @@ function renderTimeline() {
       </div>`;
     }).join('');
   }
-  drawMap(items);
+  drawMap(true);
 }
 $('#timeline').addEventListener('click', (e) => {
   const b = e.target.closest('[data-del-place]');
@@ -1083,7 +1161,7 @@ $('#btnCloseTrip').onclick = () => { S.trip = null; S.tripReadOnly = false; hist
 $('#btnSaveTrip').onclick = () => saveTripNow(true);
 $('#btnChangeTrip').onclick = () => openWizard(S.trip.region, 1, true);
 $('#btnAddPlace').onclick = openPlaceModal;
-$('#btnCenterMap').onclick = () => drawMap(S.trip ? S.trip.days[S.planDay] || [] : [], true);
+$('#btnCenterMap').onclick = () => drawMap(true);
 $('#btnShareTrip').onclick = async () => {
   if (!S.user) { toast(t('toast_needLogin'), 'info'); openAuth('login'); return; }
   S.trip.shared = true;
@@ -1124,73 +1202,324 @@ function loadGoogleMaps() {
   });
   return gmapsPromise;
 }
+const GM = { failed: false };
+const mapViews = [];
+class MapView {
+  constructor(id) { this.id = id; this.obj = null; this.kind = null; this.layers = []; mapViews.push(this); }
+  get el() { return document.getElementById(this.id); }
+  async init(center, zoom = 12) {
+    if (this.obj) return;
+    const el = this.el;
+    if (S.config && S.config.googleMapsKey && !GM.failed) {
+      try {
+        await loadGoogleMaps();
+        el.innerHTML = '';
+        this.obj = new google.maps.Map(el, { center, zoom, mapId: S.config.googleMapId, disableDefaultUI: true, zoomControl: true, clickableIcons: false, gestureHandling: 'greedy' });
+        this.kind = 'google';
+        return;
+      } catch (e) { console.warn(e); GM.failed = true; }
+    }
+    if (el._leaflet_id) { el._leaflet_id = null; el.innerHTML = ''; }
+    this.obj = L.map(el, { zoomControl: false, attributionControl: true }).setView([center.lat, center.lng], zoom);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(this.obj);
+    this.kind = 'leaflet';
+  }
+  clear() {
+    this.layers.forEach((l) => { if (this.kind === 'google') { if (l.setMap) l.setMap(null); else l.map = null; } else this.obj.removeLayer(l); });
+    this.layers = [];
+  }
+  marker({ lat, lng, html, title, z = 0, size = 32, onClick }) {
+    if (this.kind === 'google') {
+      let mk;
+      if (google.maps.marker && google.maps.marker.AdvancedMarkerElement) {
+        const d = document.createElement('div'); d.innerHTML = html;
+        const c = d.firstElementChild;
+        mk = new google.maps.marker.AdvancedMarkerElement({ map: this.obj, position: { lat, lng }, content: c, title, zIndex: z });
+        if (onClick) { c.style.cursor = 'pointer'; c.addEventListener('click', (e) => { e.stopPropagation(); onClick(); }); }
+      } else {
+        mk = new google.maps.Marker({ map: this.obj, position: { lat, lng }, title, zIndex: z });
+        if (onClick) mk.addListener('click', onClick);
+      }
+      this.layers.push(mk);
+      return mk;
+    }
+    const ic = L.divIcon({ className: '', html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
+    const mk = L.marker([lat, lng], { icon: ic, title, zIndexOffset: z }).addTo(this.obj);
+    if (onClick) mk.on('click', onClick);
+    this.layers.push(mk);
+    return mk;
+  }
+  line(pts) {
+    if (pts.length < 2) return;
+    if (this.kind === 'google') {
+      this.layers.push(new google.maps.Polyline({ map: this.obj, path: pts, strokeOpacity: 0, icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, strokeColor: '#1E3A8A', scale: 2.5 }, offset: '0', repeat: '12px' }] }));
+    } else {
+      this.layers.push(L.polyline(pts.map((p) => [p.lat, p.lng]), { color: '#1E3A8A', weight: 2.5, dashArray: '5,5', opacity: 0.85 }).addTo(this.obj));
+    }
+  }
+  fit(pts, fallback, singleZoom = 14) {
+    if (this.kind === 'google') {
+      if (pts.length > 1) { const b = new google.maps.LatLngBounds(); pts.forEach((p) => b.extend(p)); this.obj.fitBounds(b, 50); }
+      else if (pts.length === 1) { this.obj.setCenter(pts[0]); this.obj.setZoom(singleZoom); }
+      else { this.obj.setCenter(fallback); this.obj.setZoom(12); }
+      return;
+    }
+    this.obj.invalidateSize();
+    if (pts.length > 1) this.obj.fitBounds(pts.map((p) => [p.lat, p.lng]), { padding: [40, 40] });
+    else if (pts.length === 1) this.obj.setView([pts[0].lat, pts[0].lng], singleZoom);
+    else this.obj.setView([fallback.lat, fallback.lng], 12);
+  }
+  pan(p, zoom) {
+    if (this.kind === 'google') { this.obj.panTo(p); if (zoom) this.obj.setZoom(zoom); return; }
+    this.obj.setView([p.lat, p.lng], zoom || this.obj.getZoom(), { animate: true });
+  }
+  resize() { if (this.kind === 'leaflet' && this.obj) this.obj.invalidateSize(); }
+}
+const tripView = new MapView('tripMap');
+const hotView = new MapView('hotMap');
 window.gm_authFailure = () => {
   console.warn('Google Maps 인증 실패 → OpenStreetMap으로 전환');
-  S.map.gmFailed = true;
-  S.map.obj = null; S.map.layers = [];
-  if (S.trip) drawMap(S.trip.days[S.planDay] || []);
+  GM.failed = true;
+  mapViews.forEach((v) => { v.obj = null; v.kind = null; v.layers = []; });
+  if (S.trip) drawMap(true);
+  if (!$('#hotMapOverlay').classList.contains('hidden')) drawHotMap(true);
 };
-async function ensureMap() {
-  const el = $('#tripMap');
-  if (S.map.obj && S.map.el === el) return;
-  const c = { lat: S.trip.region.lat, lng: S.trip.region.lng };
-  if (S.config && S.config.googleMapsKey && !S.map.gmFailed) {
-    try {
-      await loadGoogleMaps();
-      el.innerHTML = '';
-      S.map.obj = new google.maps.Map(el, { center: c, zoom: 12, mapId: S.config.googleMapId, disableDefaultUI: true, zoomControl: true, clickableIcons: false, gestureHandling: 'greedy' });
-      S.map.kind = 'google'; S.map.el = el; S.map.layers = [];
-      return;
-    } catch (e) { console.warn(e); S.map.gmFailed = true; }
-  }
-  if (el._leaflet_id) { el._leaflet_id = null; el.innerHTML = ''; }
-  S.map.obj = L.map(el, { zoomControl: false, attributionControl: true }).setView([c.lat, c.lng], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(S.map.obj);
-  S.map.kind = 'leaflet'; S.map.el = el; S.map.layers = [];
-}
+
 function pinHtml(n, color) {
   return `<div style="background:${color};width:28px;height:28px;border-radius:50%;color:#fff;display:flex;align-items:center;justify-content:center;font:700 12px Pretendard,sans-serif;border:2px solid #fff;box-shadow:0 4px 10px rgba(0,0,0,.25)">${n}</div>`;
 }
-async function drawMap(items, recenter) {
+
+/* 지도 레이어: 올리브영 / 핫플레이스 / 팝업스토어 / 콘서트장 (픽토그램) */
+const LAYERS = {
+  oy: { color: '#6FA300', ic: 'bottle', key: 'layer_oy' },
+  hot: { color: '#F97316', ic: 'flame', key: 'layer_hot' },
+  popup: { color: '#E11D74', ic: 'gift', key: 'layer_popup' },
+  venue: { color: '#4F46E5', ic: 'mic', key: 'layer_venue' },
+};
+function poiPinHtml(layer, rank, sel) {
+  const ly = LAYERS[layer];
+  const sz = sel ? 40 : 32;
+  return `<div style="position:relative;width:${sz}px;height:${sz}px;border-radius:50%;background:${ly.color};border:${sel ? 3 : 2}px solid #fff;box-shadow:0 ${sel ? 6 : 3}px ${sel ? 16 : 8}px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;color:#fff;transition:all .15s">${icon(ly.ic, sel ? 'w-5 h-5' : 'w-4 h-4', 2)}${rank ? `<span style="position:absolute;top:-8px;right:-10px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:${sel ? ly.color : '#1D1D1F'};color:#fff;font:700 10px/15px Pretendard,sans-serif;text-align:center;border:1.5px solid #fff">${rank}</span>` : ''}</div>`;
+}
+const hotLayer = (it) => (it.kind === 'popup' ? 'popup' : 'hot');
+
+/** 트렌드 데이터(핫플·콘서트)에서 지도 표시용 장소 만들기 */
+function trendPois() {
+  const out = [];
+  const hot = trendData('hotplace');
+  (hot ? hot.items : []).forEach((it) => {
+    const l = it.location;
+    if (l && l.lat) out.push({ layer: hotLayer(it), rank: it.rank, name: it.title, original: it.original || it.title, lat: l.lat, lng: l.lng, address: l.address || '', category: it.tag || '', url: l.kakaoUrl || '', item: it });
+  });
+  const con = trendData('concert');
+  const venues = new Map();
+  (con ? con.items : []).forEach((it) => {
+    const l = it.location;
+    if (!l || !l.lat) return;
+    const k = `${l.lat.toFixed(4)},${l.lng.toFixed(4)}`;
+    if (!venues.has(k)) venues.set(k, { layer: 'venue', rank: it.rank, name: l.name || it.tag, original: l.name || it.tag, lat: l.lat, lng: l.lng, address: l.address || '', category: '', url: l.kakaoUrl || '', concerts: [] });
+    venues.get(k).concerts.push(it);
+  });
+  return out.concat([...venues.values()]);
+}
+
+async function loadOliveYoung() {
+  if (!S.trip || !(S.config && S.config.features.places)) return;
+  const c = S.trip.region;
+  const k = `${c.lat.toFixed(3)},${c.lng.toFixed(3)}`;
+  if (S.oyKey === k) return;
+  S.oyKey = k;
+  try {
+    const r = await fn('places', { q: '올리브영', lat: c.lat, lng: c.lng, sort: 'distance' });
+    if (S.oyKey !== k) return;
+    S.oyPois = r.places.filter((p) => /올리브영|OLIVE ?YOUNG/i.test(p.name)).map((p) => ({ layer: 'oy', name: p.name, original: p.name, lat: p.lat, lng: p.lng, address: p.address, category: p.category, url: p.url, phone: p.phone, distance: p.distance }));
+    renderLayerChips();
+    drawMap(false);
+  } catch { S.oyKey = ''; }
+}
+
+function renderLayerChips() {
+  const box = $('#layerChips');
+  if (!box) return;
+  const counts = { oy: (S.oyPois || []).length, hot: 0, popup: 0, venue: 0 };
+  trendPois().forEach((p) => { counts[p.layer]++; });
+  box.innerHTML = Object.keys(LAYERS).map((k) => {
+    const ly = LAYERS[k]; const on = S.layers[k];
+    return `<button data-layer="${k}" class="px-3 py-1.5 rounded-full text-[12px] font-medium shrink-0 flex items-center gap-1.5 border transition ${on ? 'text-white border-transparent' : 'bg-white text-[#6E6E73] border-black/[0.08]'}" style="${on ? `background:${ly.color}` : ''}">${icon(ly.ic, 'w-3.5 h-3.5', 2)}${esc(t(ly.key))}<span class="text-[10px] opacity-80">${counts[k]}</span></button>`;
+  }).join('');
+}
+$('#layerChips').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-layer]');
+  if (!b) return;
+  S.layers[b.dataset.layer] = !S.layers[b.dataset.layer];
+  renderLayerChips();
+  drawMap(false);
+});
+
+async function drawMap(fit = true) {
   if (!S.trip || $('#tripActive').classList.contains('hidden')) return;
-  await ensureMap();
-  const m = S.map;
-  m.layers.forEach((l) => { if (m.kind === 'google') { if ('map' in l && !l.setMap) l.map = null; else l.setMap(null); } else m.obj.removeLayer(l); });
-  m.layers = [];
+  const items = S.trip.days[S.planDay] || [];
+  const center = { lat: S.trip.region.lat, lng: S.trip.region.lng };
+  await tripView.init(center);
+  tripView.clear();
+  const pois = [];
+  if (S.layers.oy) pois.push(...(S.oyPois || []));
+  trendPois().forEach((p) => { if (S.layers[p.layer]) pois.push(p); });
+  pois.forEach((p) => tripView.marker({ lat: p.lat, lng: p.lng, html: poiPinHtml(p.layer, p.rank), title: p.name, z: 10, onClick: () => showPoi(p) }));
   const pts = items.filter((p) => p.lat && p.lng);
-  if (m.kind === 'google') {
-    const bounds = new google.maps.LatLngBounds();
-    pts.forEach((p, i) => {
-      const pos = { lat: p.lat, lng: p.lng };
-      const color = (TYPE_STYLE[p.type] || TYPE_STYLE.spot).color;
-      let mk;
-      if (google.maps.marker && google.maps.marker.AdvancedMarkerElement) {
-        const div = document.createElement('div'); div.innerHTML = pinHtml(items.indexOf(p) + 1, color);
-        mk = new google.maps.marker.AdvancedMarkerElement({ map: m.obj, position: pos, content: div.firstElementChild, title: p.name });
-      } else {
-        mk = new google.maps.Marker({ map: m.obj, position: pos, label: { text: String(items.indexOf(p) + 1), color: '#fff' }, title: p.name });
-      }
-      m.layers.push(mk); bounds.extend(pos);
-    });
-    if (pts.length > 1) {
-      const line = new google.maps.Polyline({ map: m.obj, path: pts.map((p) => ({ lat: p.lat, lng: p.lng })), strokeOpacity: 0, icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, strokeColor: '#1E3A8A', scale: 2.5 }, offset: '0', repeat: '12px' }] });
-      m.layers.push(line);
-      m.obj.fitBounds(bounds, 40);
-    } else if (pts.length === 1) { m.obj.setCenter(bounds.getCenter()); m.obj.setZoom(14); }
-    else { m.obj.setCenter({ lat: S.trip.region.lat, lng: S.trip.region.lng }); m.obj.setZoom(12); }
-  } else {
-    setTimeout(() => m.obj.invalidateSize(), 50);
-    pts.forEach((p) => {
-      const color = (TYPE_STYLE[p.type] || TYPE_STYLE.spot).color;
-      const ic = L.divIcon({ className: '', html: pinHtml(items.indexOf(p) + 1, color), iconSize: [28, 28], iconAnchor: [14, 14] });
-      m.layers.push(L.marker([p.lat, p.lng], { icon: ic, title: p.name }).addTo(m.obj));
-    });
-    const ll = pts.map((p) => [p.lat, p.lng]);
-    if (ll.length > 1) { m.layers.push(L.polyline(ll, { color: '#1E3A8A', weight: 2.5, dashArray: '5,5', opacity: 0.85 }).addTo(m.obj)); m.obj.fitBounds(ll, { padding: [30, 30] }); }
-    else if (ll.length === 1) m.obj.setView(ll[0], 14);
-    else m.obj.setView([S.trip.region.lat, S.trip.region.lng], 12);
+  pts.forEach((p) => tripView.marker({ lat: p.lat, lng: p.lng, html: pinHtml(items.indexOf(p) + 1, (TYPE_STYLE[p.type] || TYPE_STYLE.spot).color), title: p.name, z: 1000, size: 28 }));
+  tripView.line(pts.map((p) => ({ lat: p.lat, lng: p.lng })));
+  if (fit) tripView.fit(pts.map((p) => ({ lat: p.lat, lng: p.lng })), center);
+  else tripView.resize();
+}
+
+/** 지도에서 누른 장소 카드 */
+function showPoi(p) {
+  S.poi = p;
+  const ly = LAYERS[p.layer];
+  const box = $('#poiCard');
+  const concerts = (p.concerts || []).slice(0, 3).map((c) => `<li class="truncate">${esc(c.title)} · ${esc(c.subtitle)}${c.dates && c.dates.start ? ` <span class="text-[#8E8E93]">(${esc(c.dates.start.slice(5))})</span>` : ''}</li>`).join('');
+  const dist = p.distance != null ? (p.distance >= 1000 ? `${(p.distance / 1000).toFixed(1)}km` : `${p.distance}m`) : '';
+  box.innerHTML = `<div class="rounded-2xl border border-black/[0.06] bg-white p-3.5 shadow-[0_4px_18px_rgba(0,0,0,0.06)] sheet-enter">
+    <div class="flex items-start gap-3">
+      <span class="w-10 h-10 rounded-xl text-white flex items-center justify-center shrink-0" style="background:${ly.color}">${icon(ly.ic, 'w-5 h-5', 2)}</span>
+      <div class="flex-1 min-w-0">
+        <p class="text-[11px] font-semibold" style="color:${ly.color}">${esc(t(ly.key))}${p.rank && p.layer !== 'venue' ? ` · ${esc(t('rank', { n: p.rank }))}` : ''}</p>
+        <h5 class="text-[15px] font-bold truncate">${esc(p.name)}</h5>
+        <p class="text-[11px] text-[#8E8E93] truncate">${esc([p.address, dist].filter(Boolean).join(' · '))}</p>
+        ${concerts ? `<p class="text-[11px] font-semibold text-[#6E6E73] mt-1.5">${esc(t('concertsHere'))}</p><ul class="text-[12px] space-y-0.5">${concerts}</ul>` : ''}
+      </div>
+      <button data-poi="close" class="w-7 h-7 rounded-full bg-[#F2F2F7] text-[#8E8E93] flex items-center justify-center shrink-0">${icon('close', 'w-3.5 h-3.5')}</button>
+    </div>
+    <div class="flex gap-2 mt-3">
+      ${S.tripReadOnly ? '' : `<button data-poi="add" class="flex-1 py-2 rounded-xl bg-[#0071E3] text-white text-[12px] font-medium flex items-center justify-center gap-1">${icon('plus', 'w-3.5 h-3.5')}${esc(t('addToTrip'))}</button>`}
+      ${p.item ? `<button data-poi="detail" class="flex-1 py-2 rounded-xl bg-[#F2F2F7] text-[12px] font-medium">${esc(t('poiDetail'))}</button>` : ''}
+      <a href="https://map.kakao.com/link/to/${encodeURIComponent(p.original || p.name)},${p.lat},${p.lng}" target="_blank" rel="noopener noreferrer" class="flex-1 py-2 rounded-xl bg-[#FEE500]/80 text-[#3C1E1E] text-[12px] font-medium flex items-center justify-center gap-1">${icon('nav', 'w-3.5 h-3.5')}${esc(t('route'))}</a>
+    </div>
+  </div>`;
+  box.classList.remove('hidden');
+}
+$('#poiCard').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-poi]');
+  if (!b || !S.poi) return;
+  const a = b.dataset.poi;
+  if (a === 'close') { $('#poiCard').classList.add('hidden'); S.poi = null; }
+  if (a === 'add') addPoiToTrip(S.poi);
+  if (a === 'detail' && S.poi.item) openDetail(S.poi.item);
+});
+
+/** 지도 장소를 일정 추가 창으로 (선택된 상태로 열기) */
+function addPoiToTrip(p) {
+  if (!S.trip || S.tripReadOnly) { toast(t('toast_needTrip'), 'info'); closeHotMap(); selectTab('map'); return; }
+  openPlaceModal();
+  const sel = { id: 'poi', name: p.original || p.name, category: p.category || t(LAYERS[p.layer].key), address: p.address || '', lat: p.lat, lng: p.lng, url: p.url || '', phone: p.phone || '', type: p.item && ['cafe', 'food'].includes(p.item.kind) ? 'food' : 'spot', distance: null };
+  $('#placeInput').value = sel.name;
+  S.placeSel = sel;
+  setPlaceType(sel.type);
+  renderPlaceResults([sel], sel.name);
+}
+
+/* ---------------- 핫플 전체 지도 ---------------- */
+function openHotMap() {
+  const ov = $('#hotMapOverlay');
+  ov.classList.remove('hidden'); ov.classList.add('flex');
+  S.hotSel = null;
+  renderHotFilters();
+  setTimeout(() => drawHotMap(true), 30);
+}
+function closeHotMap() {
+  const ov = $('#hotMapOverlay');
+  ov.classList.add('hidden'); ov.classList.remove('flex');
+}
+$('#btnHotMapClose').onclick = closeHotMap;
+
+function hotItems() {
+  const data = trendData('hotplace');
+  const all = data ? data.items : [];
+  const located = all.filter((it) => it.location && it.location.lat);
+  const f = S.hotFilter;
+  return { all, located: located.filter((it) => f === 'all' || (f === 'popup' ? it.kind === 'popup' : it.kind !== 'popup')) };
+}
+function renderHotFilters() {
+  $('#hotMapFilters').innerHTML = [['all', 'filterAll', 'pin', '#1D1D1F'], ['place', 'layer_hot', 'flame', LAYERS.hot.color], ['popup', 'layer_popup', 'gift', LAYERS.popup.color]].map(([k, key, ic, color]) => {
+    const on = S.hotFilter === k;
+    return `<button data-hf="${k}" class="px-3.5 py-1.5 rounded-full text-[12px] font-medium flex items-center gap-1.5 border ${on ? 'text-white border-transparent' : 'bg-white text-[#6E6E73] border-black/[0.08]'}" style="${on ? `background:${color}` : ''}">${icon(ic, 'w-3.5 h-3.5', 2)}${esc(t(key))}</button>`;
+  }).join('');
+}
+$('#hotMapFilters').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-hf]');
+  if (!b) return;
+  S.hotFilter = b.dataset.hf; S.hotSel = null;
+  renderHotFilters();
+  drawHotMap(true);
+});
+
+async function drawHotMap(fit) {
+  const { all, located } = hotItems();
+  $('#hotMapSub').textContent = t('hotMapSub', { n: located.length, m: Math.max(0, all.length - all.filter((it) => it.location && it.location.lat).length) });
+  const center = located[0] ? { lat: located[0].location.lat, lng: located[0].location.lng } : { lat: 37.5665, lng: 126.978 };
+  await hotView.init(center, 12);
+  drawHotMarkers();
+  $('#hotMapCards').innerHTML = located.length ? located.map((it) => {
+    const ly = LAYERS[hotLayer(it)];
+    return `<div data-hot="${esc(it.id)}" class="snap-center shrink-0 w-[82%] bg-white rounded-[22px] p-3.5 shadow-[0_8px_24px_rgba(0,0,0,0.14)] border border-black/[0.04]">
+      <div class="flex items-center gap-2 mb-1">
+        <span class="px-2 py-0.5 rounded-full text-[11px] font-bold text-white" style="background:${ly.color}">${esc(t('rank', { n: it.rank }))}</span>
+        <span class="text-[11px] font-medium flex items-center gap-1" style="color:${ly.color}">${icon(ly.ic, 'w-3.5 h-3.5', 2)}${esc(t(ly.key))}</span>
+        <span class="text-[11px] text-[#8E8E93] truncate ml-auto">${esc(it.tag)}</span>
+      </div>
+      <h5 class="text-[16px] font-bold truncate">${esc(it.title)}</h5>
+      <p class="text-[12px] text-[#6E6E73] line-clamp-2 mt-0.5 leading-snug">${esc(it.desc)}</p>
+      <div class="flex gap-2 mt-2.5">
+        <button data-hotact="detail" class="flex-1 py-2 rounded-xl bg-[#F2F2F7] text-[12px] font-medium">${esc(t('poiDetail'))}</button>
+        <button data-hotact="add" class="flex-1 py-2 rounded-xl bg-[#0071E3] text-white text-[12px] font-medium">${esc(t('addToTrip'))}</button>
+        <a href="https://map.kakao.com/link/to/${encodeURIComponent(it.original || it.title)},${it.location.lat},${it.location.lng}" target="_blank" rel="noopener noreferrer" class="w-10 py-2 rounded-xl bg-[#FEE500]/80 text-[#3C1E1E] flex items-center justify-center">${icon('nav', 'w-4 h-4')}</a>
+      </div>
+    </div>`;
+  }).join('') : `<div class="w-full bg-white rounded-[22px] p-4 text-center text-[13px] text-[#8E8E93]">${esc(trendData('hotplace') ? t('noResults') : t('loadingTitle'))}</div>`;
+  if (fit) hotView.fit(located.map((it) => ({ lat: it.location.lat, lng: it.location.lng })), center, 15);
+  else hotView.resize();
+  if (!trendData('hotplace')) fetchCat('hotplace', S.lang, false).then(() => drawHotMap(true)).catch(() => {});
+}
+function drawHotMarkers() {
+  const { located } = hotItems();
+  hotView.clear();
+  located.forEach((it) => {
+    const sel = it.id === S.hotSel;
+    hotView.marker({ lat: it.location.lat, lng: it.location.lng, html: poiPinHtml(hotLayer(it), it.rank, sel), title: it.title, z: sel ? 2000 : 1000 - it.rank, size: sel ? 40 : 32, onClick: () => focusHot(it.id, true) });
+  });
+}
+function focusHot(id, scrollCard) {
+  const it = hotItems().located.find((x) => x.id === id);
+  if (!it) return;
+  S.hotSel = id;
+  drawHotMarkers();
+  hotView.pan({ lat: it.location.lat, lng: it.location.lng });
+  $$('#hotMapCards [data-hot]').forEach((c) => c.classList.toggle('ring-2', c.dataset.hot === id));
+  if (scrollCard) {
+    const card = $(`#hotMapCards [data-hot="${CSS.escape(id)}"]`);
+    if (card) { hotCardLock = Date.now(); card.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }
   }
 }
+let hotCardLock = 0;
+$('#hotMapCards').addEventListener('scroll', debounce(() => {
+  if (Date.now() - hotCardLock < 700) return;
+  const box = $('#hotMapCards');
+  const mid = box.getBoundingClientRect().left + box.clientWidth / 2;
+  let best = null; let bestD = Infinity;
+  $$('#hotMapCards [data-hot]').forEach((c) => { const r = c.getBoundingClientRect(); const d = Math.abs(r.left + r.width / 2 - mid); if (d < bestD) { bestD = d; best = c; } });
+  if (best && best.dataset.hot !== S.hotSel) focusHot(best.dataset.hot, false);
+}, 120));
+$('#hotMapCards').addEventListener('click', (e) => {
+  const card = e.target.closest('[data-hot]');
+  if (!card) return;
+  const it = hotItems().located.find((x) => x.id === card.dataset.hot);
+  if (!it) return;
+  const act = e.target.closest('[data-hotact]');
+  if (!act) { focusHot(it.id, false); return; }
+  if (act.dataset.hotact === 'detail') openDetail(it);
+  if (act.dataset.hotact === 'add') addPoiToTrip({ layer: hotLayer(it), rank: it.rank, name: it.title, original: it.original || it.title, lat: it.location.lat, lng: it.location.lng, address: it.location.address || '', category: it.tag, url: it.location.kakaoUrl || '', item: it });
+});
 
 /* ---------------- 일정 마법사 ---------------- */
 function openWizard(region, step, editing) {
@@ -1300,7 +1629,7 @@ $('#wizNext').onclick = () => {
   S.tripReadOnly = false;
   S.planDay = 'day1';
   closeModal('wizardModal');
-  if (S.map.obj && S.map.kind === 'google') S.map.obj.setCenter({ lat: region.lat, lng: region.lng });
+  S.oyPois = null; S.oyKey = '';
   if (S.tab !== 'map') selectTab('map'); else renderMapView();
   scheduleSave();
   toast(t('toast_tripCreated'), 'map');
@@ -1477,6 +1806,10 @@ async function boot() {
     } catch { selectTab('hotplace'); }
   } else selectTab('hotplace');
 
-  setTimeout(dismissSplash, 500);
+  // 첫 화면 데이터가 오면(최대 7초) 스플래시를 닫고, 나머지 탭도 미리 검색
+  prefetchAll();
+  const first = S.loading[`${catKey()}|${S.lang}`];
+  await Promise.race([first ? first.catch(() => {}) : Promise.resolve(), new Promise((r) => setTimeout(r, 7000))]);
+  dismissSplash();
 }
 boot();

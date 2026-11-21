@@ -156,6 +156,8 @@
           <div id="tripMap" class="w-full h-full"></div>
           <button id="btnCenterMap" class="absolute bottom-3 right-3 w-9 h-9 rounded-full bg-white text-[#0071E3] shadow-md border border-black/[0.08] flex items-center justify-center z-[400] active:scale-90 transition" data-icon="crosshair" data-icon-cls="w-4 h-4"></button>
         </div>
+        <div id="layerChips" class="flex items-center gap-1.5 mb-3 overflow-x-auto no-scrollbar"></div>
+        <div id="poiCard" class="hidden mb-4"></div>
         <div id="dayPills" class="flex items-center gap-2 mb-4 overflow-x-auto no-scrollbar"></div>
         <button id="btnAddPlace" class="w-full mb-4 py-3 px-4 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-[13px] font-medium flex items-center justify-center gap-2 active:scale-95 transition">
           <span data-icon="search" data-icon-cls="w-4 h-4"></span><span data-i18n="addPlace"></span>
@@ -188,8 +190,24 @@
   <nav id="tabBar" class="absolute bottom-0 left-0 right-0 h-[72px] bg-white/90 backdrop-blur-2xl border-t border-black/[0.05] flex items-stretch justify-around px-1 z-30"></nav>
 
   <!-- 상세 시트 -->
-  <div id="sheetBackdrop" class="hidden absolute inset-0 bg-black/45 backdrop-blur-sm z-40"></div>
-  <div id="detailSheet" class="hidden absolute bottom-0 left-0 right-0 z-50 bg-white rounded-t-[36px] px-6 pt-3 pb-8 shadow-[0_-20px_50px_rgba(0,0,0,0.18)] flex-col max-h-[90%] overflow-hidden border-t border-black/[0.06]">
+  <!-- 핫플 전체 지도 -->
+  <div id="hotMapOverlay" class="hidden absolute inset-0 z-[120] bg-[#F5F5F7] flex-col">
+    <div class="safe-top px-4 pb-3 bg-white flex items-center gap-3 shrink-0">
+      <button id="btnHotMapClose" class="w-9 h-9 rounded-full bg-[#F2F2F7] flex items-center justify-center shrink-0" data-icon="chevL" data-icon-cls="w-5 h-5"></button>
+      <div class="flex-1 min-w-0">
+        <h3 class="text-[19px] font-bold tracking-tight" data-i18n="hotMapTitle"></h3>
+        <p id="hotMapSub" class="text-[11px] text-[#8E8E93]"></p>
+      </div>
+    </div>
+    <div id="hotMapFilters" class="px-4 pb-3 bg-white flex gap-1.5 overflow-x-auto no-scrollbar shrink-0 border-b border-black/[0.05]"></div>
+    <div class="relative flex-1 isolate">
+      <div id="hotMap" class="absolute inset-0 bg-[#F1F5F9]"></div>
+      <div id="hotMapCards" class="absolute left-0 right-0 bottom-0 z-[600] flex gap-3 overflow-x-auto snap-x-mandatory no-scrollbar px-[9%] pt-2" style="padding-bottom:calc(14px + env(safe-area-inset-bottom))"></div>
+    </div>
+  </div>
+
+  <div id="sheetBackdrop" class="hidden absolute inset-0 bg-black/45 backdrop-blur-sm z-[135]"></div>
+  <div id="detailSheet" class="hidden absolute bottom-0 left-0 right-0 z-[140] bg-white rounded-t-[36px] px-6 pt-3 pb-8 shadow-[0_-20px_50px_rgba(0,0,0,0.18)] flex-col max-h-[90%] overflow-hidden border-t border-black/[0.06]">
     <div id="sheetHandle" class="w-12 h-1.5 bg-[#D1D1D6] rounded-full mx-auto mb-4 shrink-0 cursor-pointer"></div>
     <div id="detailBody" class="overflow-y-auto no-scrollbar space-y-4 pb-3"></div>
   </div>
