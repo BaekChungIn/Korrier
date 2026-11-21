@@ -18,8 +18,8 @@ const CFG = {
   llmBase: (env("LLM_BASE_URL") || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
   llmKey: env("LLM_API_KEY") || env("GROQ_API_KEY"),
   // 무료 한도는 모델마다 따로 → 한 모델이 한도에 걸리면 다음 모델로 자동 전환
-  llmModels: (env("LLM_MODELS") || "openai/gpt-oss-120b,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.3-70b-versatile,openai/gpt-oss-20b").split(",").map((x: string) => x.trim()).filter(Boolean),
-  llmFastModels: (env("LLM_FAST_MODELS") || "openai/gpt-oss-20b,meta-llama/llama-4-scout-17b-16e-instruct,llama-3.1-8b-instant,llama-3.3-70b-versatile").split(",").map((x: string) => x.trim()).filter(Boolean),
+  llmModels: (env("LLM_MODELS") || "meta-llama/llama-4-scout-17b-16e-instruct,openai/gpt-oss-120b,llama-3.3-70b-versatile,openai/gpt-oss-20b,llama-3.1-8b-instant").split(",").map((x: string) => x.trim()).filter(Boolean),
+  llmFastModels: (env("LLM_FAST_MODELS") || "meta-llama/llama-4-scout-17b-16e-instruct,llama-3.1-8b-instant,openai/gpt-oss-20b,llama-3.3-70b-versatile").split(",").map((x: string) => x.trim()).filter(Boolean),
   llmSearchModel: env("LLM_SEARCH_MODEL") || "groq/compound",    // 네이버 키가 없을 때 웹 검색용
   naverId: env("NAVER_CLIENT_ID"),
   naverSecret: env("NAVER_CLIENT_SECRET"),
@@ -30,7 +30,7 @@ const CFG = {
   xBearer: env("X_BEARER_TOKEN"),
   kopisKey: env("KOPIS_API_KEY"),          // 공연예술통합전산망(KOPIS) 공연목록 → 콘서트 탭
   kakaoJsKey: env("KAKAO_JS_KEY"),         // 카카오맵 지도(JavaScript 키, 공개돼도 되는 키)
-  trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 180,
+  trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 240,
   maxItems: 50,
   allowedOrigin: env("ALLOWED_ORIGIN") || "*",
 };
@@ -168,16 +168,38 @@ async function llmOnce(model: string, prompt: string, json: boolean, temperature
   try { data = JSON.parse(text); } catch { /* */ }
   return { res, data };
 }
-async function llm(prompt: string, { models = CFG.llmModels, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
+/** Groq 무료 플랜 모델별 분당 토큰 한도(TPM). 요청 = 입력 + max_tokens 로 계산됨 */
+const MODEL_TPM: Record<string, number> = {
+  "meta-llama/llama-4-scout-17b-16e-instruct": 30000, "openai/gpt-oss-120b": 8000, "openai/gpt-oss-20b": 8000,
+  "llama-3.3-70b-versatile": 12000, "llama-3.1-8b-instant": 6000,
+};
+const tpmOf = (m: string) => Number(env("LLM_TPM_" + m.replace(/[^a-z0-9]/gi, "_").toUpperCase())) || MODEL_TPM[m] || 8000;
+const estTokens = (t: string) => Math.ceil([...t].reduce((n, ch) => n + (/[\u3131-\uD79D\u3040-\u30ff\u4e00-\u9fff\u0e00-\u0e7f]/.test(ch) ? 0.9 : 0.3), 0)) + 20;
+const used = new Map<string, { t: number; n: number }[]>();
+const usedLastMinute = (m: string) => (used.get(m) || []).filter((x) => x.t > Date.now() - 60e3).reduce((a, x) => a + x.n, 0);
+// 한 인스턴스 안에서는 AI 호출을 한 번에 하나씩(분당 한도 초과 방지)
+let llmChain: Promise<unknown> = Promise.resolve();
+function llm(prompt: string, opts: { models?: string[]; json?: boolean; temperature?: number; maxTokens?: number } = {}): Promise<string> {
+  const run = llmChain.then(() => llmInner(prompt, opts), () => llmInner(prompt, opts));
+  llmChain = run.catch(() => {});
+  return run;
+}
+async function llmInner(prompt: string, { models = CFG.llmModels, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
   if (!CFG.llmKey) throw new HttpError(503, "LLM_API_KEY 미설정");
+  const inTok = estTokens(prompt);
   let lastErr = "no_model";
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < 3; round++) {
     let minWait = 60;
     for (const model of models) {
       if ((deadModels.get(model) || 0) > Date.now()) continue;
+      const tpm = tpmOf(model);
+      const outTok = Math.min(maxTokens, tpm - inTok - 200);
+      if (outTok < 600) { lastErr = `${model}: 요청이 이 모델 분당 한도보다 큼`; continue; }
+      if (usedLastMinute(model) + inTok + outTok > tpm) { minWait = Math.min(minWait, 15); lastErr = `${model}: 분당 한도 대기`; continue; }
       let r;
-      try { r = await llmOnce(model, prompt, json, temperature, maxTokens); } catch (e) { lastErr = (e as Error).message; continue; }
+      try { r = await llmOnce(model, prompt, json, temperature, outTok); } catch (e) { lastErr = (e as Error).message; continue; }
       const { res, data } = r;
+      used.set(model, [...(used.get(model) || []).filter((x) => x.t > Date.now() - 60e3), { t: Date.now(), n: data?.usage?.total_tokens || inTok + outTok }]);
       if (res.ok) {
         const out = data?.choices?.[0]?.message?.content || "";
         if (out) return out;
@@ -186,19 +208,18 @@ async function llm(prompt: string, { models = CFG.llmModels, json = true, temper
       const msg = String(data?.error?.message || `HTTP ${res.status}`);
       lastErr = `${model}: ${msg}`;
       if (res.status === 429) {
-        const ra = Number(res.headers.get("retry-after")) || 0;
-        // 하루 한도(TPD/RPD)면 1시간 쉬게, 분당 한도면 다음 모델로
+        const ra = Number(res.headers.get("retry-after")) || Number((msg.match(/try again in ([\d.]+)s/) || [])[1]) || 0;
         if (/per day|TPD|RPD/i.test(msg) || ra > 120) deadModels.set(model, Date.now() + 3600e3);
-        else minWait = Math.min(minWait, ra || 10);
+        else minWait = Math.min(minWait, Math.max(2, Math.ceil(ra) || 10));
         continue;
       }
       if (res.status === 404 || res.status === 400 && /model|decommission/i.test(msg)) { deadModels.set(model, Date.now() + 6 * 3600e3); continue; }
-      if (res.status === 413 || res.status >= 500) continue; // 요청이 이 모델 분당 한도보다 큼 / 일시 장애 → 다음 모델
+      if (res.status === 413 || res.status >= 500) continue;
       throw new HttpError(502, `AI: ${msg}`);
     }
-    if (round === 0) await sleep(Math.min(20, minWait) * 1000);
+    if (round < 2) await sleep(Math.min(25, minWait) * 1000);
   }
-  throw new HttpError(429, `AI 한도 초과: ${lastErr}`);
+  throw new HttpError(429, "ai_busy");
 }
 
 /* ---------------- 네이버 (NAVER API HUB / 구 개발자센터) ---------------- */
@@ -345,7 +366,7 @@ const COMMON_RULES = (today: string) => `
 - 최대 30개, 화제성 높은 순서.`;
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
-const TREND_VER = "trend:v7:";
+const TREND_VER = "trend:v8:";
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -732,7 +753,7 @@ async function pickCandidates(cat: string, snips: Snip[], hint: string) {
   const spec = SPECS[cat];
   const today = seoulDate();
   const text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 실제로 올라온 네이버 뉴스·블로그 등의 글 목록입니다.${hint}
-이 자료에 나온 내용만 근거로 ${spec.ask}을(를) 최대 50개, 화제성 높은 순서로 골라주세요.${spec.rule || ""}
+이 자료에 나온 내용만 근거로 ${spec.ask}을(를) 최대 40개, 화제성 높은 순서로 골라주세요.${spec.rule || ""}
 - 자료에 없는 것은 절대 만들지 마세요. 모르는 필드는 빈 문자열. 같은 대상은 한 번만.
 - 여러 글에 반복해서 나온 것을 우선하세요. 문장은 짧게.
 - 각 항목에 근거 글 번호를 "refs":[번호] 로 넣으세요.
@@ -740,7 +761,7 @@ async function pickCandidates(cat: string, snips: Snip[], hint: string) {
 각 항목 형식: ${spec.fields} + "refs"
 
 자료:
-${snipText(snips)}`, { maxTokens: 6000 });
+${snipText(snips)}`, { maxTokens: 5000 });
   const parsed = parseJsonLoose(text);
   const cands = Array.isArray(parsed) ? parsed : parsed?.items;
   if (!Array.isArray(cands)) throw new HttpError(502, "ai_parse_failed");
@@ -1016,7 +1037,6 @@ async function starPhotos(name: string) {
   return { photos: photos.slice(0, 24) };
 }
 
-const FEED_TTL = 3 * 3600e3;
 const ATHLETE = /선수|축구|야구|골프|배구|농구|피겨|수영|테니스|e스포츠|프로게이머|감독/;
 const ACTOR = /배우|탤런트|연기자|actor|actress/i;
 function starQueries(name: string, sub: string) {
@@ -1024,6 +1044,55 @@ function starQueries(name: string, sub: string) {
   if (ATHLETE.test(sub)) return [...common, "경기", "다음 경기", "경기 일정", "선발 출전", "출전", "중계", "A매치", "광고 촬영"];
   if (ACTOR.test(sub)) return [...common, "드라마 방영", "영화 개봉", "제작발표회", "팬미팅", "시상식", "패션쇼", "화보", "무대인사"];
   return [...common, "콘서트", "컴백", "발매", "팬미팅", "팬사인회", "음악방송", "대학 축제", "축제 라인업", "페스티벌", "패션쇼", "시상식", "월드투어"];
+}
+/** AI 없이 기사 제목·요약에서 날짜와 일정 종류를 직접 뽑기 (네이버 검색 결과만 사용) */
+const SCH_RULES: [string, RegExp][] = [
+  ["match", /경기|출전|선발|맞대결|vs\.?|원정|홈경기|A매치|평가전|리그|더비/i],
+  ["ticket", /티켓\s?오픈|예매\s?(오픈|시작)|선예매|일반\s?예매/],
+  ["fanmeeting", /팬미팅|팬사인회|팬콘|팬\s?이벤트|팬싸/],
+  ["concert", /콘서트|투어|단독\s?공연|앙코르/],
+  ["festival", /축제|페스티벌|대동제|라인업/],
+  ["comeback", /컴백|발매|앨범|음원|싱글|선공개/],
+  ["stage", /음악방송|엠카|뮤직뱅크|인기가요|쇼챔|음악중심|더\s?쇼|무대/],
+  ["youtube", /유튜브|웹예능|채널|라이브\s?방송|자컨/],
+  ["release", /개봉|방영|첫\s?방송|제작발표회|무대인사|시사회/],
+  ["fashion", /패션쇼|화보|패션위크|브랜드\s?행사|포토월/],
+  ["broadcast", /출연|예능|라디오|방송/],
+  ["event", /시상식|어워즈|AWARDS|행사|참석|광고/i],
+];
+function nextDate(month: number, day: number, ref: Date) {
+  if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31)) return "";
+  let y = ref.getUTCFullYear();
+  let d = new Date(Date.UTC(y, month - 1, day));
+  if (d.getTime() < ref.getTime() - 200 * 86400e3) d = new Date(Date.UTC(++y, month - 1, day));
+  return d.toISOString().slice(0, 10);
+}
+function ruleSchedule(name: string, pool: any[], today: string) {
+  const out: any[] = [];
+  for (const x of pool) {
+    const txt = `${x.title} ${x.desc}`;
+    if (!txt.includes(name.slice(0, 2))) continue;
+    const type = (SCH_RULES.find(([, re]) => re.test(txt)) || [])[0];
+    if (!type) continue;
+    const ref = new Date(`${x.date}T00:00:00Z`);
+    let date = "";
+    let m = txt.match(/(\d{1,2})\s?월\s?(\d{1,2})\s?일/);
+    if (m) date = nextDate(Number(m[1]), Number(m[2]), ref);
+    if (!date && (m = txt.match(/(?:^|[^\d])(\d{1,2})\/(\d{1,2})(?:[^\d]|$)/))) date = nextDate(Number(m[1]), Number(m[2]), ref);
+    if (!date && (m = txt.match(/오는\s?(\d{1,2})\s?일/))) {
+      const dd = Number(m[1]); let mm = ref.getUTCMonth() + 1;
+      if (dd < ref.getUTCDate()) mm = mm === 12 ? 1 : mm + 1;
+      date = nextDate(mm, dd, ref);
+    }
+    if (!date && /내일/.test(txt)) date = new Date(ref.getTime() + 86400e3).toISOString().slice(0, 10);
+    if (!date && /오늘/.test(txt)) date = x.date;
+    if (!date || date < today) continue;
+    const tm = txt.match(/(오전|오후)?\s?(\d{1,2})시(?:\s?(\d{1,2})분)?/);
+    let time = "";
+    if (tm) { let h = Number(tm[2]); if (tm[1] === "오후" && h < 12) h += 12; if (h < 24) time = `${String(h).padStart(2, "0")}:${String(Number(tm[3] || 0)).padStart(2, "0")}`; }
+    out.push({ date, endDate: "", time, type, title: x.title.replace(/\[[^\]]*\]|\([^)]*\)/g, "").trim().slice(0, 60), place: "", link: x.link });
+  }
+  return out;
 }
 const SCH_TYPES = ["concert", "fanmeeting", "comeback", "broadcast", "youtube", "match", "festival", "fashion", "stage", "release", "event", "ticket"];
 
@@ -1044,6 +1113,7 @@ async function buildStarFeed(name: string, sub = "") {
   const photos = (photoR.items || []).map((x: any) => ({ thumb: httpsOnly(x.thumbnail || ""), full: httpsOnly(x.link || "") })).filter((x: any) => x.thumb).slice(0, 12);
 
   let schedule: any[] = [];
+  let aiFailed = !CFG.llmKey;
   const pool = [...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 120);
   if (pool.length && CFG.llmKey) {
     const today = seoulDate();
@@ -1074,14 +1144,34 @@ ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 80)}`)
         }))
         .filter((x: any) => { const k = x.date + x.title.replace(/\s/g, "").slice(0, 10); if (keys.has(k)) return false; keys.add(k); return true; })
         .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 40);
-    } catch (e) { console.warn("[star schedule]", (e as Error).message); }
+    } catch (e) { console.warn("[star schedule]", (e as Error).message); aiFailed = true; }
   }
-  return { name, news, photos, schedule, updatedAt: new Date().toISOString() };
+  const today = seoulDate();
+  // AI가 못 했거나 빠진 것은 규칙으로 직접 뽑은 일정으로 채움
+  const rules = ruleSchedule(name, pool, today);
+  // 공연예술통합전산망(KOPIS)에 등록된 이 스타의 공연
+  let kop: any[] = [];
+  if (CFG.kopisKey) {
+    const nn = normName(name);
+    const cls = await kopisClassified().catch(() => null);
+    // AI 분류가 안 되면 공연 제목에 스타 이름이 들어간 공연을 그대로 사용
+    const rows = cls || (await kopisRaw().catch(() => [])).filter((r: any) => normName(r.name).includes(nn))
+      .map((r: any) => ({ artist: name, title: r.name, startDate: r.from, endDate: r.to, venue: r.venue, sourceUrl: `https://www.kopis.or.kr/por/db/pblprfr/pblprfrView.do?menuId=MNU_00020&mt20Id=${r.id}` }));
+    kop = rows.filter((c: any) => nn.length > 1 && (normName(c.artist).includes(nn) || nn.includes(normName(c.artist)) && normName(c.artist).length > 1) && (c.endDate || c.startDate) >= today)
+      .map((c: any) => ({ date: c.startDate < today ? today : c.startDate, endDate: c.endDate && c.endDate !== c.startDate ? c.endDate : "", time: "", type: /팬미팅|FAN/i.test(c.title) ? "fanmeeting" : "concert", title: c.title, place: c.venue, link: c.sourceUrl }));
+  }
+  const seenK = new Set<string>();
+  schedule = [...kop, ...schedule, ...rules]
+    .filter((x: any) => { const k = `${x.date}|${x.type}`; const k2 = x.date + x.title.replace(/\s/g, "").slice(0, 8); if (seenK.has(k) || seenK.has(k2)) return false; seenK.add(k); seenK.add(k2); return true; })
+    .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 40);
+  return { name, news, photos, schedule, partial: aiFailed, updatedAt: new Date().toISOString() };
 }
 async function getStarFeed(name: string, lang: string, force: boolean, sub = "") {
-  const key = `star:v2:${hashId(name)}`;
+  const key = `star:v3:${hashId(name)}`;
   let base = (await cacheGet(key))?.data || null;
   const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
+  const builtDay = base ? new Date(Date.parse(base.updatedAt) + 9 * 3600e3).toISOString().slice(0, 10) : "";
+  const stale = !!base && (builtDay !== seoulDate() || (base.partial && age > 15 * 60e3));
   let refreshing = false;
   const build = async () => {
     if (!(await tryLock(key))) return false;
@@ -1091,7 +1181,7 @@ async function getStarFeed(name: string, lang: string, force: boolean, sub = "")
     if (!(await build())) { for (let i = 0; i < 30 && !base; i++) { await sleep(2000); base = (await cacheGet(key))?.data || null; } }
     base = base || (await cacheGet(key))?.data;
     if (!base) throw new HttpError(504, "trend_timeout");
-  } else if (age > FEED_TTL || (force && age > 15 * 60e3)) {
+  } else if (stale || (force && age > 10 * 60e3)) {
     refreshing = true;
     background(build());
   }
