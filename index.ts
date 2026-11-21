@@ -343,7 +343,7 @@ const COMMON_RULES = (today: string) => `
 - 최대 30개, 화제성 높은 순서.`;
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
-const TREND_VER = "trend:v5:";
+const TREND_VER = "trend:v6:";
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -384,8 +384,13 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
     fields: '{"artist":"아티스트(그룹/가수/배우) 이름","artistType":"kpop|singer|actor|entertainer|other","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
   },
   slang: {
-    ask: "최근 한 달 한국 SNS·커뮤니티에서 실제로 많이 쓰이는 유행어·신조어",
-    fields: '{"word":"유행어","romanization":"로마자 표기, 음절을 하이픈으로(예: Jung-ji-jeong)","meaning":"짧은 뜻(15자 이내)","example":"한국어 예문 1개","nuance":"의미·뉘앙스·유래 1~2문장"}',
+    ask: "지금 한국 SNS(X·인스타·틱톡·쇼츠)와 커뮤니티에서 실제로 쓰이는 유행어·신조어·밈 표현",
+    rule: `
+- 사람들이 대화·댓글에서 실제로 따라 쓰는 '말(표현)'만 고르세요. 예: 야르, 럭키비키, 추구미, 중꺾마 같은 것.
+- 다음은 절대 넣지 마세요: 사람·그룹·선수 이름, 시험·자격증 이름(LEET, 세무사 등), 기관·대회·상품·브랜드 이름, 영어 약어(LPGA 등), 뉴스 키워드·사건명, 원래 있던 표준어.
+- type: 유행어·신조어=slang, 밈·짤 대사=meme, 챌린지·숏폼 사운드 대사=challenge, 고유명사·시험·기관·뉴스 키워드=other.
+- origin: 어디서(커뮤니티/X/쇼츠/방송 등) 어떻게 생겼는지 1문장.`,
+    fields: '{"word":"유행어","type":"slang|meme|challenge|other","romanization":"로마자 표기, 음절을 하이픈으로(예: Jung-ji-jeong)","meaning":"짧은 뜻(15자 이내)","example":"실제로 쓰는 한국어 예문 1개","nuance":"의미·뉘앙스 1문장","origin":"유래 1문장"}',
   },
 };
 
@@ -405,7 +410,7 @@ function validCandidate(cat: string, c: any): boolean {
   }
   if (cat === "concert") return !!(s(c.artist) && s(c.title)) && ["kpop", "singer", "actor", "entertainer"].includes(s(c.artistType).toLowerCase()) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
   if (cat === "hotplace") return !!s(c.name);
-  if (cat === "slang") return !!s(c.word);
+  if (cat === "slang") return !!s(c.word) && s(c.word).length <= 15 && ["slang", "meme", "challenge"].includes(s(c.type).toLowerCase()) && !/^[A-Z0-9 ]+$/.test(s(c.word));
   return true;
 }
 
@@ -457,7 +462,7 @@ function baseItem(cat: string, c: any): any {
       break;
     case "slang":
       Object.assign(item, {
-        title: c.word, subtitle: c.romanization || "", desc: c.nuance || "",
+        title: c.word, subtitle: c.romanization || "", desc: [c.nuance, c.origin ? `유래: ${c.origin}` : ""].filter(Boolean).join(" "),
         slang: { meaning: c.meaning || "", example: c.example || "", exampleTr: "", pron: "" },
         link: `https://x.com/search?q=${enc(c.word)}&f=live`, linkKind: "x",
       });
@@ -550,12 +555,12 @@ const SEEDS: Record<string, string[]> = {
   "fashion-musinsa": ["무신사 랭킹 1위", "무신사 인기 상품", "무신사 품절", "무신사 추천템"],
   "fashion-ably": ["에이블리 랭킹 1위", "에이블리 인기 상품", "에이블리 추천템", "에이블리 구매 후기"],
   concert: ["단독 콘서트 개최", "팬미팅 개최 확정", "아이돌 콘서트 티켓 오픈", "월드투어 서울 공연", "전국투어 콘서트", "배우 팬미팅"],
-  slang: ["신조어 뜻", "요즘 유행어", "MZ 유행어", "밈 뜻", "유행어 뜻 무슨 뜻"],
+  slang: ["캐릿 요즘 뜨는 밈", "트렌드어워드 신조어", "요즘 유행하는 밈 뜻", "신조어 뜻 유래", "MZ 신조어 정리", "유행어 뜻 밈 유래", "트위터 유행어", "더쿠 유행어", "쇼츠 유행 밈", "챌린지 유행어"],
 };
 type Snip = { t: string; d: string; link: string; kind: string; date: string };
-async function collectSnippets(queries: string[], perQuery = 40, max = 70): Promise<Snip[]> {
-  const since = Date.now() - 7 * 86400e3;
-  const sinceBlog = seoulDate(-7).replace(/-/g, "");
+async function collectSnippets(queries: string[], perQuery = 40, max = 70, days = 7): Promise<Snip[]> {
+  const since = Date.now() - days * 86400e3;
+  const sinceBlog = seoulDate(-days).replace(/-/g, "");
   const lists = await mapLimit(queries, 3, async (q) => {
     const [news, blog] = await Promise.all([
       naverSearch("news", q, { display: perQuery, sort: "date" }).catch(() => ({ items: [] })),
@@ -585,11 +590,27 @@ async function collectSnippets(queries: string[], perQuery = 40, max = 70): Prom
 }
 const snipText = (snips: Snip[]) => snips.map((x, i) => `[${i}] (${x.kind} ${x.date}) ${x.t} — ${x.d.slice(0, 55)}`).join("\n");
 
+/** 유행어 검증: 네이버 블로그에서 '단어 + 뜻'으로 찾았을 때 신조어·유행어·밈으로 설명하는 글이 실제로 있어야 통과 */
+const SLANG_EVIDENCE = /신조어|유행어|밈|줄임말|급식체|챌린지|인터넷 용어|유행하는|무슨 뜻|뜻과 유래|짤/;
+async function verifySlang(cands: any[]) {
+  const checked = await mapLimit(cands.slice(0, 60), 5, async (c: any) => {
+    const w = String(c.word).trim();
+    const r = await naverSearch("blog", `${w} 뜻`, { display: 30, sort: "sim" }).catch(() => ({ items: [] }));
+    const hits = (r.items || []).filter((x: any) => {
+      const txt = stripTags(`${x.title} ${x.description}`);
+      return txt.includes(w) && SLANG_EVIDENCE.test(txt);
+    }).length;
+    c._evidence = hits;
+    return hits >= 3 ? c : null;
+  });
+  return checked.filter(Boolean).sort((a: any, b: any) => b._evidence - a._evidence);
+}
+
 async function buildTrends(cat: string) {
   const spec = SPECS[cat];
   const today = seoulDate();
   let hint = "";
-  if (cat === "hotplace" || cat === "slang" || cat === "concert") {
+  if (cat === "hotplace" || cat === "concert") {
     const gt = await googleTrendsKR().catch(() => []);
     if (gt.length) hint = `\n참고: 지금 구글 트렌드 한국 급상승 검색어(검색량): ${gt.join(", ")}\n관련 있는 것이 있으면 우선 반영하세요.`;
   }
@@ -597,7 +618,7 @@ async function buildTrends(cat: string) {
   let sources: { title: string; uri: string }[] = [];
   let snips: Snip[] = [];
   if (HAS_NAVER) {
-    snips = await collectSnippets(SEEDS[cat]);
+    snips = cat === "slang" ? await collectSnippets(SEEDS[cat], 30, 90, 30) : await collectSnippets(SEEDS[cat]);
     if (snips.length < 5) throw new HttpError(502, "not_enough_data");
     text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 7일 동안 실제로 올라온 네이버 뉴스·블로그 글 목록입니다.${hint}
 이 자료에 나온 내용만 근거로 ${spec.ask}을(를) 최대 50개, 화제성 높은 순서로 골라주세요.${spec.rule || ""}
@@ -626,6 +647,8 @@ ${snipText(snips)}`, { maxTokens: 6000 });
   cands = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
   if (!cands.length) throw new HttpError(502, "no_valid_items");
   if (cat === "concert") cands = cands.filter((c: any) => !c.endDate || c.endDate >= today);
+  if (cat === "slang") cands = await verifySlang(cands);
+  if (!cands.length) throw new HttpError(502, "no_valid_items");
   const seen = new Set<string>();
   let items = cands.map((c: any) => baseItem(cat, c)).filter((it: any) => (seen.has(it.id) ? false : (seen.add(it.id), true)));
   const scored = await scoreItems(items);
@@ -786,7 +809,7 @@ ${basisText} ${LANG_NAMES[lang]}로 작성하고, 다음 JSON 객체 하나만 �
 
 /* ---------------- MY스타: 검색 · 사진 · 소식/일정 ---------------- */
 const httpsOnly = (u: string) => (u || "").replace(/^http:\/\//, "https://");
-const STAR_WORD = /가수|아이돌|그룹|보이그룹|걸그룹|배우|래퍼|싱어송라이터|멤버|연예인|방송인|뮤지션|보컬|댄서|솔로|밴드|탤런트|MC|모델|프로듀서|작곡가|singer|idol|actor|actress|rapper|band/i;
+const STAR_WORD = /선수|축구|야구|골프|배구|농구|피겨|수영|e스포츠|프로게이머|유튜버|크리에이터|가수|아이돌|그룹|보이그룹|걸그룹|배우|래퍼|싱어송라이터|멤버|연예인|방송인|뮤지션|보컬|댄서|솔로|밴드|탤런트|MC|모델|프로듀서|작곡가|singer|idol|actor|actress|rapper|band/i;
 async function starSearch(q: string) {
   const ck = `starq:${hashId(q.toLowerCase())}`;
   const hit = await cacheGet(ck);
@@ -841,56 +864,75 @@ async function starPhotos(name: string) {
 }
 
 const FEED_TTL = 3 * 3600e3;
-async function buildStarFeed(name: string) {
-  const since = Date.now() - 45 * 86400e3;
+const ATHLETE = /선수|축구|야구|골프|배구|농구|피겨|수영|테니스|e스포츠|프로게이머|감독/;
+const ACTOR = /배우|탤런트|연기자|actor|actress/i;
+function starQueries(name: string, sub: string) {
+  const common = ["일정", "출연 예정", "방송 출연", "유튜브 출연", "예능 출연", "행사 참석"];
+  if (ATHLETE.test(sub)) return [...common, "경기", "다음 경기", "경기 일정", "선발 출전", "출전", "중계", "A매치", "광고 촬영"];
+  if (ACTOR.test(sub)) return [...common, "드라마 방영", "영화 개봉", "제작발표회", "팬미팅", "시상식", "패션쇼", "화보", "무대인사"];
+  return [...common, "콘서트", "컴백", "발매", "팬미팅", "팬사인회", "음악방송", "대학 축제", "축제 라인업", "페스티벌", "패션쇼", "시상식", "월드투어"];
+}
+const SCH_TYPES = ["concert", "fanmeeting", "comeback", "broadcast", "youtube", "match", "festival", "fashion", "stage", "release", "event", "ticket"];
+
+async function buildStarFeed(name: string, sub = "") {
+  const since = Date.now() - 60 * 86400e3;
+  const queries = starQueries(name, sub);
   const [newsR, photoR, ...schedR] = await Promise.all([
     naverSearch("news", name, { display: 40, sort: "date" }).catch(() => ({ items: [] })),
     naverSearch("image", name, { display: 18, sort: "date" }).catch(() => ({ items: [] })),
-    ...["콘서트", "컴백", "팬미팅", "출연", "발매", "일정"].map((w) => naverSearch("news", `${name} ${w}`, { display: 20, sort: "date" }).catch(() => ({ items: [] }))),
+    ...queries.map((w) => naverSearch("news", `${name} ${w}`, { display: 15, sort: "date" }).catch(() => ({ items: [] }))),
   ]);
   const toNews = (x: any) => ({ title: stripTags(x.title), desc: stripTags(x.description).slice(0, 140), link: x.originallink || x.link, date: new Date(Date.parse(x.pubDate) + 9 * 3600e3).toISOString().slice(0, 10) });
   const seen = new Set<string>();
   const uniq = (arr: any[]) => arr.filter((x) => { const k = x.title.replace(/\s+/g, "").slice(0, 28); if (seen.has(k)) return false; seen.add(k); return true; });
   const news = uniq((newsR.items || []).map(toNews)).slice(0, 20);
-  const schedSnips = uniq(schedR.flatMap((r: any) => r.items || []).filter((x: any) => Date.parse(x.pubDate) >= since).map(toNews)).slice(0, 60);
+  const schedSnips = uniq(schedR.flatMap((r: any) => r.items || []).filter((x: any) => Date.parse(x.pubDate) >= since).map(toNews))
+    .filter((x: any) => (x.title + x.desc).includes(name.slice(0, 2))).slice(0, 110);
   const photos = (photoR.items || []).map((x: any) => ({ thumb: httpsOnly(x.thumbnail || ""), full: httpsOnly(x.link || "") })).filter((x: any) => x.thumb).slice(0, 12);
 
   let schedule: any[] = [];
-  const pool = [...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 70);
+  const pool = [...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 120);
   if (pool.length && CFG.llmKey) {
     const today = seoulDate();
-    const prompt = `오늘은 ${today}입니다. 아래는 "${name}" 관련 최근 네이버 뉴스입니다.
-여기서 "${name}" 본인(또는 그룹)이 참여하는, 오늘(${today}) 이후에 열리거나 공개되는 일정만 뽑으세요.
-종류: concert(콘서트/투어), fanmeeting(팬미팅/팬사인회), comeback(컴백/앨범·음원 발매), broadcast(방송·예능·드라마 출연/방영), event(시상식/페스티벌/행사), ticket(티켓 오픈/예매).
-규칙: 자료에 날짜가 명확한 것만. 이미 지난 일정, 추측, "${name}"이(가) 아닌 다른 사람의 일정은 제외. 같은 일정은 하나로.
-JSON 객체 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"YYYY-MM-DD 또는 빈 문자열","time":"HH:MM 또는 빈 문자열","type":"위 종류 중 하나","title":"짧은 일정 이름(한국어)","place":"장소 또는 빈 문자열","ref":자료 번호}]}
+    const prompt = `오늘은 ${today}입니다. 아래는 "${name}"${sub ? `(${sub})` : ""} 관련 최근 네이버 뉴스입니다.
+"${name}" 본인(또는 소속 그룹·팀)이 참여하는, 오늘(${today}) 이후에 있거나 오늘 진행 중인 일정을 빠짐없이 모두 뽑으세요.
+종류(type):
+- match: 스포츠 경기·출전 예정 경기(상대팀 포함해 제목 작성, 예: "토트넘 vs 첼시")
+- concert: 콘서트·투어 / fanmeeting: 팬미팅·팬사인회·팬콘
+- comeback: 컴백·앨범·음원 발매 / release: 드라마 방영·영화 개봉·제작발표회
+- broadcast: TV·라디오·예능 출연·방영 / youtube: 유튜브 채널·웹예능 출연·공개
+- stage: 음악방송·무대·공연 출연 / festival: 대학 축제·페스티벌·지역 축제
+- fashion: 패션쇼·브랜드 행사·화보 공개 / event: 시상식·광고·행사·기타 / ticket: 티켓 오픈·예매
+규칙: 자료에 날짜가 나온 것만(요일·"다음 주 ○요일"처럼 날짜를 정확히 계산할 수 있으면 계산해서). 이미 지난 일정, 추측, 다른 사람의 일정은 제외. 같은 일정은 하나로.
+JSON 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"YYYY-MM-DD 또는 빈 문자열","time":"HH:MM 또는 빈 문자열","type":"위 종류 중 하나","title":"짧은 일정 이름(한국어)","place":"장소·채널·방송사 또는 빈 문자열","ref":자료 번호}]}
 자료:
-${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 90)}`).join("\n")}`;
+${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 80)}`).join("\n")}`;
     try {
-      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 2500, temperature: 0.1 }));
+      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 4000, temperature: 0.1 }));
       const arr = Array.isArray(obj?.schedule) ? obj.schedule : [];
       const keys = new Set<string>();
-      schedule = arr.filter((x: any) => /^\d{4}-\d{2}-\d{2}$/.test(x?.date) && (x.endDate && /^\d{4}-\d{2}-\d{2}$/.test(x.endDate) ? x.endDate : x.date) >= today && x.title)
+      const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+      schedule = arr.filter((x: any) => isD(x?.date) && (isD(x.endDate) ? x.endDate : x.date) >= today && x.title)
         .map((x: any) => ({
-          date: x.date, endDate: /^\d{4}-\d{2}-\d{2}$/.test(x.endDate || "") ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "",
-          type: ["concert", "fanmeeting", "comeback", "broadcast", "event", "ticket"].includes(x.type) ? x.type : "event",
+          date: x.date, endDate: isD(x.endDate) ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "",
+          type: SCH_TYPES.includes(x.type) ? x.type : "event",
           title: String(x.title).slice(0, 80), place: String(x.place || "").slice(0, 60),
           link: pool[Number(x.ref)]?.link || "",
         }))
         .filter((x: any) => { const k = x.date + x.title.replace(/\s/g, "").slice(0, 10); if (keys.has(k)) return false; keys.add(k); return true; })
-        .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 20);
+        .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 40);
     } catch (e) { console.warn("[star schedule]", (e as Error).message); }
   }
   return { name, news, photos, schedule, updatedAt: new Date().toISOString() };
 }
-async function getStarFeed(name: string, lang: string, force: boolean) {
-  const key = `star:${hashId(name)}`;
+async function getStarFeed(name: string, lang: string, force: boolean, sub = "") {
+  const key = `star:v2:${hashId(name)}`;
   let base = (await cacheGet(key))?.data || null;
   const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
   let refreshing = false;
   const build = async () => {
     if (!(await tryLock(key))) return false;
-    try { await cacheSet(key, await buildStarFeed(name)); return true; } catch (e) { await unlock(key); throw e; }
+    try { await cacheSet(key, await buildStarFeed(name, sub)); return true; } catch (e) { await unlock(key); throw e; }
   };
   if (!base) {
     if (!(await build())) { for (let i = 0; i < 30 && !base; i++) { await sleep(2000); base = (await cacheGet(key))?.data || null; } }
@@ -973,7 +1015,7 @@ async function handle(req: Request) {
       const name = String(body.name || "").trim().slice(0, 40);
       if (!name) throw new HttpError(400, "name_required");
       if (!HAS_NAVER) throw new HttpError(503, "naver_missing");
-      return getStarFeed(name, langOf(body.lang), body.force === true);
+      return getStarFeed(name, langOf(body.lang), body.force === true, String(body.sub || "").slice(0, 60));
     }
     case "places": {
       const q = String(body.q || "").trim();
