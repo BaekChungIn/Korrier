@@ -189,32 +189,46 @@ async function loadFeed(name, force) {
 
 function scheduleHtml(feed, st) {
   const today = todayStr();
-  const items = (feed.schedule || []).map((x) => {
-    const sty = SCH_STYLE[x.type] || SCH_STYLE.event;
-    const dd = x.date.split('-')[2];
-    const diff = Math.round((Date.parse(x.date) - Date.parse(today)) / 86400e3);
-    const dlabel = x.date <= today && (!x.endDate || x.endDate >= today) ? t('today') : `D-${diff}`;
-    const tag = x.link ? 'a' : 'div';
-    const href = x.link ? ` href="${esc(safeUrl(x.link))}" target="_blank" rel="noopener noreferrer"` : '';
-    return `<${tag}${href} class="flex gap-3 bg-white rounded-[22px] p-4 border border-black/[0.03] active:scale-[0.99] transition">
-      <div class="w-14 shrink-0 rounded-2xl flex flex-col items-center justify-center py-2" style="background:${sty.c}14;color:${sty.c}">
-        <span class="text-[11px] font-semibold">${esc(fmtDay(x.date, { month: 'short' }))}</span><span class="text-[22px] font-black leading-none">${Number(dd)}</span>
-      </div>
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-1.5 text-[11px] font-bold" style="color:${sty.c}">${icon(sty.ic, 'w-3.5 h-3.5')}${esc(t('sch_' + x.type))}<span class="ml-auto px-2 py-0.5 rounded-full ${dlabel === t('today') ? 'bg-[#E11D74] text-white' : 'bg-[#F2F2F7] text-[#6E6E73]'}">${esc(dlabel)}</span></div>
-        <p class="text-[15px] font-bold mt-1 leading-snug">${esc(x.title)}</p>
-        <p class="text-[12px] text-[#8E8E93] mt-0.5 flex flex-wrap gap-x-2">${x.endDate && x.endDate !== x.date ? `<span>~ ${esc(fmtDay(x.endDate, { month: 'short', day: 'numeric' }))}</span>` : ''}${x.time ? `<span>${esc(x.time)}</span>` : ''}${x.place ? `<span class="flex items-center gap-0.5">${icon('pin', 'w-3 h-3')}${esc(x.place)}</span>` : ''}</p>
-      </div></${tag}>`;
+  const list = (feed.schedule || []).filter((x) => (x.endDate || x.date) >= today);
+  // 날짜별로 묶어서 한눈에 (리마인·블립 스타일)
+  const days = new Map();
+  list.forEach((x) => { const d = x.date < today ? today : x.date; if (!days.has(d)) days.set(d, []); days.get(d).push(x); });
+  const wk = (d) => fmtDay(d, { weekday: 'short' });
+  const items = [...days.entries()].map(([d, arr]) => {
+    const diff = Math.round((Date.parse(d) - Date.parse(today)) / 86400e3);
+    const isToday = diff <= 0;
+    const rows = arr.sort((a, b) => (a.time || '99').localeCompare(b.time || '99')).map((x) => {
+      const sty = SCH_STYLE[x.type] || SCH_STYLE.event;
+      const tag = x.link ? 'a' : 'div';
+      const href = x.link ? ` href="${esc(safeUrl(x.link))}" target="_blank" rel="noopener noreferrer"` : '';
+      return `<${tag}${href} class="flex items-start gap-3 px-4 py-3 active:bg-black/[0.03]">
+        <span class="w-12 shrink-0 text-[14px] font-bold tabular-nums pt-[1px]" style="color:${sty.c}">${esc(x.time || t('allDay'))}</span>
+        <span class="min-w-0 flex-1">
+          <span class="block text-[15px] font-bold leading-snug">${esc(x.title)}</span>
+          <span class="block text-[12px] text-[#8E8E93] mt-0.5 truncate"><span class="inline-flex items-center gap-0.5 align-middle" style="color:${sty.c}">${icon(sty.ic, 'w-3 h-3')}${esc(t('sch_' + x.type))}</span>${x.place ? ` · ${esc(x.place)}` : ''}${x.endDate ? ` · ~${esc(fmtDay(x.endDate, { month: 'short', day: 'numeric' }))}` : ''}</span>
+        </span>
+      </${tag}>`;
+    }).join('<div class="h-px bg-black/[0.05] mx-4"></div>');
+    return `<div class="bg-white rounded-[22px] border border-black/[0.03] overflow-hidden">
+      <div class="flex items-center gap-2 px-4 pt-3.5 pb-1.5">
+        <span class="text-[15px] font-black">${esc(fmtDay(d, { month: 'long', day: 'numeric' }))}</span>
+        <span class="text-[13px] text-[#8E8E93] font-semibold">${esc(wk(d))}</span>
+        <span class="ml-auto px-2.5 py-0.5 rounded-full text-[11px] font-bold ${isToday ? 'bg-[#E11D74] text-white' : 'bg-[#F2F2F7] text-[#6E6E73]'}">${esc(isToday ? t('today') : `D-${diff}`)}</span>
+      </div>${rows}</div>`;
   });
+  const head = `<div class="flex items-center justify-between px-1">
+      <span class="text-[13px] font-bold text-[#3A3A3C]">${esc(t('schCount', { n: list.length }))}</span>
+      <button data-s="refreshFeed" class="flex items-center gap-1 text-[12px] font-semibold text-[#E11D74] px-3 py-1.5 rounded-full bg-[#FFF0F6]">${icon('refresh', 'w-3.5 h-3.5')}${esc(t('refreshNow'))}</button>
+    </div>`;
   const con = trendData('concert');
   const norm = (s) => String(s || '').replace(/\s/g, '').toLowerCase();
   const related = con ? con.items.filter((it) => [it.title, it.koreanName, it.keyword].some((v) => v && (norm(v).includes(norm(st.name)) || norm(st.name).includes(norm(v)) && norm(v).length > 1))) : [];
   const relHtml = related.length ? `<p class="text-[12px] font-bold text-[#8E8E93] px-1 pt-2 flex items-center gap-1">${icon('ticket', 'w-3.5 h-3.5')}${esc(t('relatedConcerts'))}</p>`
     + related.map((it) => `<button data-s="concert" data-id="${esc(it.id)}" class="w-full text-left flex items-center gap-3 bg-white rounded-[22px] p-3 border border-black/[0.03]">
-        <span class="w-12 h-12 rounded-2xl overflow-hidden bg-[#EAF2FF] shrink-0">${it.image ? `<img src="${esc(it.image)}" class="w-full h-full object-cover" alt="" referrerpolicy="no-referrer">` : ''}</span>
+        <span class="w-12 h-12 rounded-2xl overflow-hidden bg-[#EAF2FF] shrink-0">${it.image ? `<img src="${esc(it.image.thumb || it.image.url || '')}" class="w-full h-full object-cover" alt="" referrerpolicy="no-referrer">` : ''}</span>
         <span class="min-w-0 flex-1"><span class="block text-[14px] font-bold truncate">${esc(it.title)}</span><span class="block text-[12px] text-[#8E8E93] truncate">${esc(it.subtitle || '')}</span></span>
         <span class="text-[11px] font-bold text-[#2563EB]">#${it.rank}</span></button>`).join('') : '';
-  return (items.length ? items.join('') : `<div class="bg-white rounded-[24px] p-7 text-center"><span class="inline-flex w-12 h-12 rounded-full bg-[#F2F2F7] text-[#8E8E93] items-center justify-center">${icon('calendar', 'w-6 h-6')}</span><p class="text-[13px] text-[#8E8E93] mt-3">${esc(t('noSchedule'))}</p></div>`)
+  return head + (items.length ? items.join('') : `<div class="bg-white rounded-[24px] p-7 text-center"><span class="inline-flex w-12 h-12 rounded-full bg-[#F2F2F7] text-[#8E8E93] items-center justify-center">${icon('calendar', 'w-6 h-6')}</span><p class="text-[13px] text-[#8E8E93] mt-3">${esc(t('noSchedule'))}</p></div>`)
     + relHtml
     + `<p class="text-[11px] text-[#AEAEB2] px-2 leading-relaxed flex gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(t('scheduleNote'))} · ${esc(t('updated', { t: timeAgo(feed.updatedAt) }))}</span></p>`;
 }
@@ -320,6 +334,7 @@ $('#starView').addEventListener('click', (e) => {
   else if (a === 'add') openStarModal();
   else if (a === 'pick') { S.starIdx = Number(b.dataset.i); renderStarView(); }
   else if (a === 'seg') { S.starSeg = b.dataset.k; renderStarView(); }
+  else if (a === 'refreshFeed') { const st = curStar(); b.disabled = true; b.classList.add('opacity-50'); toast(t('feedLoading'), 'refresh'); loadFeed(st.name, true); }
   else if (a === 'retry') { const st = curStar(); delete S.feeds[`${st.name}|${S.lang}`]; renderStarSeg(); }
   else if (a === 'concert') { const con = trendData('concert'); const it = con && con.items.find((x) => x.id === b.dataset.id); if (it) openDetail(it); }
   else if (a === 'qsave') saveAnswer(b.closest('[data-q]'));

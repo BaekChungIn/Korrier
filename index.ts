@@ -454,7 +454,7 @@ const COMMON_RULES = (today: string) => `
 - 최대 30개, 화제성 높은 순서.`;
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
-const TREND_VER = "trend:v9:";
+const TREND_VER = "trend:v10:";
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -1173,7 +1173,7 @@ function ruleSchedule(name: string, pool: any[], today: string) {
   const out: any[] = [];
   for (const x of pool) {
     const txt = `${x.title} ${x.desc}`;
-    if (!txt.includes(name.slice(0, 2))) continue;
+    if (!txt.includes(name)) continue;
     const type = (SCH_RULES.find(([, re]) => re.test(txt)) || [])[0];
     if (!type) continue;
     const ref = new Date(`${x.date}T00:00:00Z`);
@@ -1192,10 +1192,39 @@ function ruleSchedule(name: string, pool: any[], today: string) {
     const tm = txt.match(/(오전|오후)?\s?(\d{1,2})시(?:\s?(\d{1,2})분)?/);
     let time = "";
     if (tm) { let h = Number(tm[2]); if (tm[1] === "오후" && h < 12) h += 12; if (h < 24) time = `${String(h).padStart(2, "0")}:${String(Number(tm[3] || 0)).padStart(2, "0")}`; }
-    out.push({ date, endDate: "", time, type, title: x.title.replace(/\[[^\]]*\]|\([^)]*\)/g, "").trim().slice(0, 60), place: "", link: x.link });
+    const vs = txt.match(/([가-힣A-Za-z.]{2,12})\s?(?:vs\.?|VS|대)\s?([가-힣A-Za-z.]{2,12})/);
+    const q = txt.match(/[‘'"“]([^’'"”]{2,24})[’'"”]/);
+    const title = type === "match" && vs ? `${vs[1]} vs ${vs[2]}` : q ? `${SCH_LABEL[type]} '${q[1]}'` : SCH_LABEL[type];
+    out.push({ date, endDate: "", time, type, title, place: "", link: x.link });
   }
   return out;
 }
+/** 일정 이름을 짧게: 기사식 따옴표·말줄임·괄호 설명 제거 */
+function shortTitle(t: string) {
+  let x = String(t || "").replace(/\s+/g, " ").trim();
+  x = x.replace(/^\[[^\]]{1,12}\]\s*/, "").replace(/[…]+|\.{3,}/g, " ").replace(/\s*[-|·]\s*(블립|리마인|네이버|뉴스|.*?일보|.*?뉴스)$/, "").trim();
+  return x.length > 30 ? x.slice(0, 29) + "…" : x;
+}
+/** 공개 웹페이지를 열어서 날짜·시간이 들어간 줄만 텍스트로 */
+async function pageText(url: string, max = 3000) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol) || /^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(u.hostname)) return "";
+    const r = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1", "accept-language": "ko-KR,ko;q=0.9" }, signal: AbortSignal.timeout(10000), redirect: "follow" });
+    if (!r.ok || !/html|text/.test(r.headers.get("content-type") || "")) return "";
+    const html = (await r.text()).slice(0, 800000);
+    const txt = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<noscript[\s\S]*?<\/noscript>|<svg[\s\S]*?<\/svg>/gi, " ")
+      .replace(/<br\s*\/?>|<\/(p|div|li|tr|td|h\d|section|article|time|span)>/gi, "\n").replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/[ \t]+/g, " ");
+    const lines = txt.split("\n").map((l) => l.trim()).filter((l) => l && l.length < 160);
+    const DATE = /\d{1,4}\s?[.\/월-]\s?\d{1,2}|\d{1,2}:\d{2}|오늘|내일|[월화수목금토일]요일/;
+    const keep: string[] = [];
+    lines.forEach((l, i) => { if (DATE.test(l) || DATE.test(lines[i - 1] || "") || DATE.test(lines[i - 2] || "")) keep.push(l); });
+    return [...new Set(keep)].join("\n").slice(0, max);
+  } catch { return ""; }
+}
+const SCH_LABEL: Record<string, string> = { match: "경기", concert: "콘서트", fanmeeting: "팬미팅·팬사인회", comeback: "컴백·발매", release: "드라마·영화 공개", broadcast: "방송 출연", youtube: "유튜브 출연", stage: "음악방송·무대", festival: "축제 출연", fashion: "패션·화보", event: "행사", ticket: "티켓 오픈" };
 const SCH_TYPES = ["concert", "fanmeeting", "comeback", "broadcast", "youtube", "match", "festival", "fashion", "stage", "release", "event", "ticket"];
 
 async function buildStarFeed(name: string, sub = "") {
@@ -1214,78 +1243,82 @@ async function buildStarFeed(name: string, sub = "") {
     .filter((x: any) => (x.title + x.desc).includes(name.slice(0, 2))).slice(0, 110);
   const photos = (photoR.items || []).map((x: any) => ({ thumb: httpsOnly(x.thumbnail || ""), full: httpsOnly(x.link || "") })).filter((x: any) => x.thumb).slice(0, 12);
 
-  let schedule: any[] = [];
-  let aiFailed = !CFG.llmKey;
-  const athlete = ATHLETE.test(sub);
-  const gSnips = (await Promise.all([brightSearch(`${name} 일정`, 10), brightSearch(athlete ? `${name} 다음 경기 일정` : `${name} 컴백 콘서트 팬미팅 일정`, 10)])).flat()
-    .map((x) => ({ title: x.t, desc: x.d, link: x.link, date: seoulDate() }));
-  const pool = [...gSnips, ...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 120);
-  if (pool.length && CFG.llmKey) {
-    const today = seoulDate();
-    const prompt = `오늘은 ${today}입니다. 아래는 "${name}"${sub ? `(${sub})` : ""} 관련 최근 네이버 뉴스입니다.
-"${name}" 본인(또는 소속 그룹·팀)이 참여하는, 오늘(${today}) 이후에 있거나 오늘 진행 중인 일정을 빠짐없이 모두 뽑으세요.
-종류(type):
-- match: 스포츠 경기·출전 예정 경기(상대팀 포함해 제목 작성, 예: "토트넘 vs 첼시")
-- concert: 콘서트·투어 / fanmeeting: 팬미팅·팬사인회·팬콘
-- comeback: 컴백·앨범·음원 발매 / release: 드라마 방영·영화 개봉·제작발표회
-- broadcast: TV·라디오·예능 출연·방영 / youtube: 유튜브 채널·웹예능 출연·공개
-- stage: 음악방송·무대·공연 출연 / festival: 대학 축제·페스티벌·지역 축제
-- fashion: 패션쇼·브랜드 행사·화보 공개 / event: 시상식·광고·행사·기타 / ticket: 티켓 오픈·예매
-규칙: 자료에 날짜가 나온 것만(요일·"다음 주 ○요일"처럼 날짜를 정확히 계산할 수 있으면 계산해서). 이미 지난 일정, 추측, 다른 사람의 일정은 제외. 같은 일정은 하나로.
-JSON 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"YYYY-MM-DD 또는 빈 문자열","time":"HH:MM 또는 빈 문자열","type":"위 종류 중 하나","title":"짧은 일정 이름(한국어)","place":"장소·채널·방송사 또는 빈 문자열","ref":자료 번호}]}
-자료:
-${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 80)}`).join("\n")}`;
-    try {
-      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 4000, temperature: 0.1 }));
-      const arr = Array.isArray(obj?.schedule) ? obj.schedule : [];
-      const keys = new Set<string>();
-      const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
-      schedule = arr.filter((x: any) => isD(x?.date) && (isD(x.endDate) ? x.endDate : x.date) >= today && x.title)
-        .map((x: any) => ({
-          date: x.date, endDate: isD(x.endDate) ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "",
-          type: SCH_TYPES.includes(x.type) ? x.type : "event",
-          title: String(x.title).slice(0, 80), place: String(x.place || "").slice(0, 60),
-          link: pool[Number(x.ref)]?.link || "",
-        }))
-        .filter((x: any) => { const k = x.date + x.title.replace(/\s/g, "").slice(0, 10); if (keys.has(k)) return false; keys.add(k); return true; })
-        .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 40);
-    } catch (e) { console.warn("[star schedule]", (e as Error).message); aiFailed = true; }
-  }
   const today = seoulDate();
-  // Gemini 구글 검색 연동: 공식 일정·경기 일정표까지 직접 검색
-  const gr = await geminiSearch(`오늘은 ${today}입니다. 구글 검색으로 "${name}"${sub ? `(${sub})` : ""}의 오늘 이후 일정을 모두 찾아주세요.
-${athlete ? "소속팀·대표팀의 다음 경기 일정(상대팀, 날짜, 시간, 경기장), 방송·광고·행사 출연" : "콘서트·투어, 팬미팅·팬사인회, 컴백·발매, 음악방송·무대, 예능·라디오·유튜브 출연, 대학 축제·페스티벌, 패션쇼·화보, 시상식, 드라마·영화 공개"}.
-날짜가 확인된 것만. 이미 지난 일정 제외. 시간은 한국 시간.
-JSON 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"${SCH_TYPES.join("|")}","title":"짧은 일정 이름(한국어)","place":"장소·채널·방송사"}]}`, 3000).catch(() => null);
-  if (gr) {
-    const o = parseJsonLoose(gr.text);
-    const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
-    const gsched = (Array.isArray(o?.schedule) ? o.schedule : []).filter((x: any) => isD(x?.date) && (isD(x.endDate) ? x.endDate : x.date) >= today && x.title)
-      .map((x: any, i: number) => ({ date: x.date, endDate: isD(x.endDate) ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "", type: SCH_TYPES.includes(x.type) ? x.type : "event", title: String(x.title).slice(0, 80), place: String(x.place || "").slice(0, 60), link: gr.sources[i % Math.max(1, gr.sources.length)]?.uri || "" }));
-    schedule = [...gsched, ...schedule];
-    if (gsched.length) aiFailed = false;
-  }
-  // AI가 못 했거나 빠진 것은 규칙으로 직접 뽑은 일정으로 채움
-  const rules = ruleSchedule(name, pool, today);
-  // 공연예술통합전산망(KOPIS)에 등록된 이 스타의 공연
+  const athlete = ATHLETE.test(sub);
+  const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+  const clean = (arr: any[], linkOf: (x: any, i: number) => string) => (Array.isArray(arr) ? arr : [])
+    .filter((x: any) => isD(x?.date) && (isD(x.endDate) ? x.endDate : x.date) >= today && x.title && String(x.title).length <= 40 && !/[!?]["”']|\.\.\.|…/.test(String(x.title)))
+    .map((x: any, i: number) => ({
+      date: x.date, endDate: isD(x.endDate) && x.endDate !== x.date ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time.padStart(5, "0") : "",
+      type: SCH_TYPES.includes(x.type) ? x.type : "event", title: shortTitle(String(x.title)), place: String(x.place || "").slice(0, 40), link: linkOf(x, i),
+    }));
+
+  // 1) 구글 검색(Bright Data): 일정 정리 사이트·경기 일정표 찾기
+  const gQueries = athlete ? [`${name} 다음 경기 일정`, `${name} 경기 일정`, `${name} 일정`] : [`${name} 일정 스케줄`, `${name} 팬사인회 콘서트 일정`, `${name} 방송 출연 일정`];
+  const google = (await Promise.all(gQueries.map((q) => brightSearch(q, 10)))).flat();
+  const gSnips = google.map((x) => ({ title: x.t, desc: x.d, link: x.link, date: today }));
+  // 2) 일정이 정리된 페이지를 직접 열어서 날짜·시간이 있는 줄만 가져옴
+  const pageCands = [...new Map(google.filter((x) => /일정|스케줄|schedule|fixture|경기|캘린더|calendar/i.test(x.t + x.d) && isHttpUrl(x.link)).map((x) => [x.link, x])).values()].slice(0, 4);
+  const [pages, gr] = await Promise.all([
+    Promise.all(pageCands.map(async (x) => ({ url: x.link, title: x.t, text: await pageText(x.link, 3000) }))),
+    // 3) Gemini 구글 검색 연동
+    geminiSearch(`오늘은 ${today}입니다. 구글 검색으로 "${name}"${sub ? `(${sub})` : ""}의 오늘 이후 일정을 빠짐없이 찾아주세요.
+${athlete ? "소속팀·대표팀의 다음 경기(상대팀·날짜·한국 시간·경기장), 방송·광고·행사" : "콘서트·투어, 팬미팅·팬사인회, 컴백·발매, 음악방송·무대, 예능·라디오·유튜브 출연, 대학 축제·페스티벌, 패션쇼·화보, 시상식, 드라마·영화"}.
+날짜가 확인된 것만. 지난 일정 제외.
+title은 15자 안팎의 짧은 일정 이름(예: "LAFC vs 시애틀", "팬사인회 (MAKESTAR)", "인기가요 출연", "단독 콘서트 RESCENE"). 기사 제목 금지.
+JSON 하나만: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"${SCH_TYPES.join("|")}","title":"","place":""}]}`, 3000).catch(() => null),
+  ]);
+  const pageTexts = pages.filter((p) => p.text.length > 80);
+  const pool = [...gSnips, ...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 70);
+
+  let schedule: any[] = [];
+  let aiFailed = false;
+  if (gr) schedule = clean(parseJsonLoose(gr.text)?.schedule, (_x, i) => gr.sources[i % Math.max(1, gr.sources.length)]?.uri || "");
+
+  // 4) AI 정리: 일정 페이지 내용 + 뉴스·검색 요약
+  if ((pageTexts.length || pool.length) && (CFG.llmKey || CFG.geminiKey)) {
+    const prompt = `오늘은 ${today}(한국 시간)입니다. "${name}"${sub ? `(${sub})` : ""}의 일정표를 만듭니다.
+아래 [페이지]는 구글에서 찾은 일정 정리 페이지의 내용이고, [자료]는 최근 검색 결과·뉴스입니다.
+"${name}" 본인(또는 소속 그룹·팀)의 오늘 이후 일정을 빠짐없이 모두 뽑으세요. 페이지의 일정은 전부 옮기세요.
+type: match(경기) concert(콘서트·투어) fanmeeting(팬미팅·팬사인회·영통팬싸) comeback(컴백·발매) release(드라마·영화 공개) broadcast(TV·라디오·예능) youtube(유튜브·웹예능·자체콘텐츠) stage(음악방송·무대) festival(축제·페스티벌) fashion(패션쇼·화보) event(시상식·행사·광고·기념일) ticket(티켓 오픈)
+규칙:
+- title은 15자 안팎의 짧은 일정 이름. 기사 제목·감탄문 금지. 예: "LAFC vs 시애틀", "팬사인회 (MAKESTAR)", "인기가요 출연", "2027 시즌그리팅 발매", "MAMA 레드카펫"
+- 경기는 "우리팀 vs 상대팀" 형식, 시간은 한국 시간.
+- 날짜를 확실히 알 수 있는 것만. 지난 일정·추측·다른 사람 일정은 제외. 같은 일정은 하나로.
+JSON 하나만: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"","title":"","place":"장소·방송사·채널 또는 빈 문자열","src":"p번호 또는 자료 번호"}]}
+${pageTexts.map((p, i) => `[페이지 p${i}] ${p.title}\n${p.text}`).join("\n\n")}
+
+[자료]
+${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 70)}`).join("\n")}`;
+    try {
+      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 5000, temperature: 0.1 }));
+      const ai = clean(obj?.schedule, (x) => { const m = String(x.src || "").match(/^p(\d+)$/); return m ? pageTexts[Number(m[1])]?.url || "" : pool[Number(x.src)]?.link || ""; });
+      schedule = [...schedule, ...ai];
+    } catch (e) { console.warn("[star schedule]", (e as Error).message); aiFailed = true; }
+  } else aiFailed = true;
+
+  // 5) AI가 전혀 안 될 때만: 기사에서 날짜를 직접 찾아 짧은 이름으로
+  if (!schedule.length && aiFailed) schedule = ruleSchedule(name, pool, today);
+
+  // 6) 공연예술통합전산망(KOPIS)에 등록된 이 스타의 공연
   let kop: any[] = [];
   if (CFG.kopisKey) {
     const nn = normName(name);
     const cls = await kopisClassified().catch(() => null);
-    // AI 분류가 안 되면 공연 제목에 스타 이름이 들어간 공연을 그대로 사용
     const rows = cls || (await kopisRaw().catch(() => [])).filter((r: any) => normName(r.name).includes(nn))
       .map((r: any) => ({ artist: name, title: r.name, startDate: r.from, endDate: r.to, venue: r.venue, sourceUrl: `https://www.kopis.or.kr/por/db/pblprfr/pblprfrView.do?menuId=MNU_00020&mt20Id=${r.id}` }));
     kop = rows.filter((c: any) => nn.length > 1 && (normName(c.artist).includes(nn) || nn.includes(normName(c.artist)) && normName(c.artist).length > 1) && (c.endDate || c.startDate) >= today)
-      .map((c: any) => ({ date: c.startDate < today ? today : c.startDate, endDate: c.endDate && c.endDate !== c.startDate ? c.endDate : "", time: "", type: /팬미팅|FAN/i.test(c.title) ? "fanmeeting" : "concert", title: c.title, place: c.venue, link: c.sourceUrl }));
+      .map((c: any) => ({ date: c.startDate < today ? today : c.startDate, endDate: c.endDate && c.endDate !== c.startDate ? c.endDate : "", time: "", type: /팬미팅|FAN/i.test(c.title) ? "fanmeeting" : "concert", title: shortTitle(c.title), place: c.venue, link: c.sourceUrl }));
   }
+  // 같은 날·같은 시간·비슷한 이름은 하나로
   const seenK = new Set<string>();
-  schedule = [...kop, ...schedule, ...rules]
-    .filter((x: any) => { const k = `${x.date}|${x.type}`; const k2 = x.date + x.title.replace(/\s/g, "").slice(0, 8); if (seenK.has(k) || seenK.has(k2)) return false; seenK.add(k); seenK.add(k2); return true; })
-    .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 40);
+  schedule = [...kop, ...schedule]
+    .filter((x: any) => { const k = `${x.date}|${x.time}|${normName(x.title).slice(0, 6)}`; if (seenK.has(k)) return false; seenK.add(k); return true; })
+    .sort((a: any, b: any) => (a.date + (a.time || "99")).localeCompare(b.date + (b.time || "99"))).slice(0, 60);
   return { name, news, photos, schedule, partial: aiFailed, updatedAt: new Date().toISOString() };
 }
 async function getStarFeed(name: string, lang: string, force: boolean, sub = "") {
-  const key = `star:v3:${hashId(name)}`;
+  const key = `star:v4:${hashId(name)}`;
   let base = (await cacheGet(key))?.data || null;
   const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
   const builtDay = base ? new Date(Date.parse(base.updatedAt) + 9 * 3600e3).toISOString().slice(0, 10) : "";
