@@ -87,6 +87,7 @@ const SCH_STYLE = {
   broadcast: { ic: 'tv', c: '#F59E0B' }, event: { ic: 'star', c: '#10B981' }, ticket: { ic: 'ticket', c: '#EF4444' },
   match: { ic: 'ball', c: '#16A34A' }, youtube: { ic: 'play', c: '#DC2626' }, festival: { ic: 'sparkles', c: '#D946EF' },
   fashion: { ic: 'bag', c: '#111827' }, stage: { ic: 'music', c: '#7C3AED' }, release: { ic: 'film', c: '#0891B2' },
+  discharge: { ic: 'shield', c: '#2F6B4F' },
 };
 
 function renderStarView() {
@@ -201,12 +202,15 @@ function scheduleHtml(feed, st) {
       const sty = SCH_STYLE[x.type] || SCH_STYLE.event;
       const tag = x.link ? 'a' : 'div';
       const href = x.link ? ` href="${esc(safeUrl(x.link))}" target="_blank" rel="noopener noreferrer"` : '';
+      const isMatch = x.type === 'match';
+      const logos = isMatch && Array.isArray(x.logos) && x.logos.filter(Boolean).length === 2
+        ? `<span class="flex items-center -space-x-1.5 shrink-0 self-center">${x.logos.map((l) => `<span class="w-8 h-8 rounded-full bg-white border border-black/[0.06] flex items-center justify-center overflow-hidden"><img src="${esc(safeUrl(l))}" alt="" class="w-6 h-6 object-contain" referrerpolicy="no-referrer" onerror="this.parentNode.remove()"></span>`).join('')}</span>` : '';
       return `<${tag}${href} class="flex items-start gap-3 px-4 py-3 active:bg-black/[0.03]">
-        <span class="w-12 shrink-0 text-[14px] font-bold tabular-nums pt-[1px]" style="color:${sty.c}">${esc(x.time || t('allDay'))}</span>
+        <span class="w-12 shrink-0 text-[14px] font-bold tabular-nums pt-[1px] leading-tight" style="color:${sty.c}">${esc(x.time || t(isMatch ? 'timeTBD' : 'allDay'))}</span>
         <span class="min-w-0 flex-1">
           <span class="block text-[15px] font-bold leading-snug">${esc(x.title)}</span>
-          <span class="block text-[12px] text-[#8E8E93] mt-0.5 truncate"><span class="inline-flex items-center gap-0.5 align-middle" style="color:${sty.c}">${icon(sty.ic, 'w-3 h-3')}${esc(t('sch_' + x.type))}</span>${x.place ? ` · ${esc(x.place)}` : ''}${x.endDate ? ` · ~${esc(fmtDay(x.endDate, { month: 'short', day: 'numeric' }))}` : ''}</span>
-        </span>
+          <span class="block text-[12px] text-[#8E8E93] mt-0.5 truncate"><span class="inline-flex items-center gap-0.5 align-middle" style="color:${sty.c}">${icon(sty.ic, 'w-3 h-3')}${esc(t('sch_' + x.type))}</span>${x.comp ? ` · ${esc(x.comp)}` : ''}${x.place ? ` · ${esc(x.place)}` : ''}${x.endDate ? ` · ~${esc(fmtDay(x.endDate, { month: 'short', day: 'numeric' }))}` : ''}</span>
+        </span>${logos}
       </${tag}>`;
     }).join('<div class="h-px bg-black/[0.05] mx-4"></div>');
     return `<div class="bg-white rounded-[22px] border border-black/[0.03] overflow-hidden">
@@ -216,7 +220,17 @@ function scheduleHtml(feed, st) {
         <span class="ml-auto px-2.5 py-0.5 rounded-full text-[11px] font-bold ${isToday ? 'bg-[#E11D74] text-white' : 'bg-[#F2F2F7] text-[#6E6E73]'}">${esc(isToday ? t('today') : `D-${diff}`)}</span>
       </div>${rows}</div>`;
   });
-  const head = `<div class="flex items-center justify-between px-1">
+  // 군 복무 중이면 맨 위에 전역 카드
+  const ms = feed.status && feed.status.type === 'military' && feed.status.until >= today ? feed.status : null;
+  const milHtml = ms ? `<div class="rounded-[22px] p-4 bg-gradient-to-br from-[#24473A] to-[#3B7358] text-white flex items-center gap-3.5 shadow-[0_8px_22px_rgba(36,71,58,0.25)]">
+      <span class="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">${icon('shield', 'w-6 h-6')}</span>
+      <span class="min-w-0 flex-1"><span class="block text-[15px] font-black truncate">${esc(t('milServing'))}${ms.unit ? ` · ${esc(ms.unit)}` : ''}</span>
+        <span class="block text-[12px] text-white/80 mt-0.5">${esc(t('milUntil', { date: fmtDay(ms.until, { year: 'numeric', month: 'long', day: 'numeric' }) }))}</span></span>
+      <span class="text-[22px] font-black tabular-nums shrink-0">D-${Math.max(0, Math.round((Date.parse(ms.until) - Date.parse(today)) / 86400e3))}</span>
+    </div>` : '';
+  const basis = feed.basis || [];
+  const note = [basis.includes('espn') ? t('noteEspn') : '', basis.includes('kopis') ? t('noteKopis') : '', t('scheduleNote')].filter(Boolean).join(' · ');
+  const head = milHtml + `<div class="flex items-center justify-between px-1">
       <span class="text-[13px] font-bold text-[#3A3A3C]">${esc(t('schCount', { n: list.length }))}</span>
       <button data-s="refreshFeed" class="flex items-center gap-1 text-[12px] font-semibold text-[#E11D74] px-3 py-1.5 rounded-full bg-[#FFF0F6]">${icon('refresh', 'w-3.5 h-3.5')}${esc(t('refreshNow'))}</button>
     </div>`;
@@ -227,10 +241,10 @@ function scheduleHtml(feed, st) {
     + related.map((it) => `<button data-s="concert" data-id="${esc(it.id)}" class="w-full text-left flex items-center gap-3 bg-white rounded-[22px] p-3 border border-black/[0.03]">
         <span class="w-12 h-12 rounded-2xl overflow-hidden bg-[#EAF2FF] shrink-0">${it.image ? `<img src="${esc(it.image.thumb || it.image.url || '')}" class="w-full h-full object-cover" alt="" referrerpolicy="no-referrer">` : ''}</span>
         <span class="min-w-0 flex-1"><span class="block text-[14px] font-bold truncate">${esc(it.title)}</span><span class="block text-[12px] text-[#8E8E93] truncate">${esc(it.subtitle || '')}</span></span>
-        <span class="text-[11px] font-bold text-[#2563EB]">#${it.rank}</span></button>`).join('') : '';
+        <span class="text-[11px] font-bold text-[#2563EB] shrink-0 max-w-[96px] text-right leading-tight">${esc(concertDateText(it))}</span></button>`).join('') : '';
   return head + (items.length ? items.join('') : `<div class="bg-white rounded-[24px] p-7 text-center"><span class="inline-flex w-12 h-12 rounded-full bg-[#F2F2F7] text-[#8E8E93] items-center justify-center">${icon('calendar', 'w-6 h-6')}</span><p class="text-[13px] text-[#8E8E93] mt-3">${esc(t('noSchedule'))}</p></div>`)
     + relHtml
-    + `<p class="text-[11px] text-[#AEAEB2] px-2 leading-relaxed flex gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(t('scheduleNote'))} · ${esc(t('updated', { t: timeAgo(feed.updatedAt) }))}</span></p>`;
+    + `<p class="text-[11px] text-[#AEAEB2] px-2 leading-relaxed flex gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(note)} · ${esc(t('updated', { t: timeAgo(feed.updatedAt) }))}</span></p>`;
 }
 function newsHtml(feed) {
   if (!(feed.news || []).length) return `<div class="bg-white rounded-[24px] p-7 text-center text-[13px] text-[#8E8E93]">${esc(t('noNews'))}</div>`;

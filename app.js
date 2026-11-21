@@ -453,10 +453,22 @@ function renderList() {
   if (!data.items || !data.items.length) { area.innerHTML = `<div class="text-center text-[13px] text-[#8E8E93] py-10">${esc(t('empty'))}</div>`; return; }
 
   const errBanner = err && !err.retrying ? `<div class="bg-amber-50 border border-amber-100 text-amber-800 text-[12px] rounded-2xl px-4 py-2.5 flex items-center gap-2">${icon('alert', 'w-4 h-4')}<span>${esc(errText(err))}</span></div>` : '';
-  const total = data.items.length;
+  const isConcert = cat.startsWith('concert');
+  const list = isConcert ? concertSorted(data.items) : data.items;
+  const total = list.length;
   const shown = Math.min(total, S.shown[cat] || 10);
-  const items = data.items.slice(0, shown);
-  const body = cat === 'slang' ? slangHtml(items) : items.map(cardHtml).join('');
+  const items = list.slice(0, shown);
+  let body;
+  if (cat === 'slang') body = slangHtml(items);
+  else if (isConcert) {
+    let last = '';
+    body = items.map((it) => {
+      const k = concertKey(it).slice(0, 7);
+      const head = k !== last ? `<p class="text-[13px] font-black text-[#3A3A3C] px-1.5 pt-1 flex items-center gap-1.5">${icon('calendar', 'w-4 h-4')}${esc(k === '9999-99' ? t('dateTBA') : dFmt(k + '-01', { year: 'numeric', month: 'long' }))}</p>` : '';
+      last = k;
+      return head + cardHtml(it);
+    }).join('');
+  } else body = items.map(cardHtml).join('');
   const more = total > shown ? `<button data-more="${esc(cat)}" class="w-full py-3.5 rounded-[22px] bg-white border border-black/[0.05] text-[14px] font-semibold flex items-center justify-center gap-1.5 active:scale-[0.99] transition">${icon('chevD', 'w-4 h-4')}${esc(t('more', { a: shown + 1, b: Math.min(total, shown + 10), n: total }))}</button>` : '';
   const hotBtn = cat === 'hotplace' ? hotMapButtonHtml(data) : '';
   area.innerHTML = errBanner + hotBtn + body + more + sourcesHtml(data.sources);
@@ -502,6 +514,49 @@ function hotMapButtonHtml(data) {
   </button>`;
 }
 
+/* 콘서트: 날짜순 (진행 중 → 가까운 날짜 → '월'만 아는 공연 → 날짜 미정) */
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const isFullDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+function concertKey(it) {
+  const m = String((it.dates && it.dates.start) || '').match(/^(\d{4})-(\d{2})(?:-(\d{2}))?/);
+  return m ? `${m[1]}-${m[2]}-${m[3] || '32'}` : '9999-99-99';
+}
+function concertSorted(items) {
+  const today = localToday();
+  return items.filter((it) => { const e = (it.dates && (it.dates.end || it.dates.start)) || ''; return !isFullDate(e) || e >= today; })
+    .slice().sort((a, b) => concertKey(a).localeCompare(concertKey(b)) || (b.score || 0) - (a.score || 0));
+}
+function dFmt(iso, opts) {
+  const [y, m, d] = String(iso).split('-').map(Number);
+  return new Intl.DateTimeFormat(langInfo().locale, { ...opts, timeZone: 'UTC' }).format(new Date(Date.UTC(y, (m || 1) - 1, d || 1)));
+}
+function concertDateText(it) {
+  const s = (it.dates && it.dates.start) || '', e = (it.dates && it.dates.end) || '';
+  if (!/^\d{4}-\d{2}/.test(s)) return t('dateTBA');
+  if (!isFullDate(s)) return t('inMonth', { m: dFmt(s.slice(0, 7) + '-01', { month: 'long' }) });
+  const one = (x) => dFmt(x, { month: 'short', day: 'numeric', weekday: 'short' });
+  return isFullDate(e) && e !== s ? `${one(s)} ~ ${one(e)}` : one(s);
+}
+function concertBlock(it, st) {
+  const s = (it.dates && it.dates.start) || '', e = (it.dates && it.dates.end) || '';
+  if (!/^\d{4}-\d{2}/.test(s)) return `<div class="w-12 shrink-0"><div class="w-12 h-[54px] rounded-[14px] bg-[#F2F2F7] text-[#8E8E93] flex items-center justify-center text-[10px] font-bold text-center leading-tight px-1">${esc(t('dateTBA'))}</div></div>`;
+  const today = localToday();
+  let badge = '';
+  if (isFullDate(s)) {
+    const end = isFullDate(e) ? e : s;
+    const diff = Math.round((Date.parse(s) - Date.parse(today)) / 864e5);
+    badge = s <= today && end >= today
+      ? `<span class="text-[10px] font-black text-[#E5484D]">${esc(s === today ? t('today') : t('ongoing'))}</span>`
+      : `<span class="text-[10px] font-bold text-[#8E8E93] tabular-nums">D-${diff}</span>`;
+  }
+  return `<div class="w-12 shrink-0 flex flex-col items-center gap-1">
+    <div class="w-12 rounded-[14px] overflow-hidden text-center" style="background:${st.bg}">
+      <div class="text-[10px] font-bold text-white py-[3px]" style="background:${st.fg}">${esc(dFmt(s.slice(0, 7) + '-01', { month: 'short' }))}</div>
+      <div class="text-[21px] font-black leading-none py-1.5 tabular-nums" style="color:${st.fg}">${esc(isFullDate(s) ? String(Number(s.slice(8, 10))) : '?')}</div>
+    </div>${badge}</div>`;
+}
+const cleanTag = (tag) => String(tag || '').split(' · ').filter((x) => x && !/미상|미정|unknown/i.test(x)).join(' · ');
+
 /** 지난번 순위와 비교: ▲3계단 상승 / ▼2계단 하락 / NEW / 변동 없음 */
 function rankDeltaHtml(it, compact) {
   if (it.prevRank === undefined) return '';
@@ -514,8 +569,9 @@ function rankDeltaHtml(it, compact) {
 function cardHtml(it) {
   const st = CAT_STYLE[it.cat] || CAT_STYLE.hotplace;
   let tag = '';
-  if (it.cat.startsWith('concert') && it.dates && it.dates.start) {
-    tag = `<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-[#EAF2FF] text-[#2563EB]">${icon('calendar', 'w-3.5 h-3.5')}${esc(it.dates.start)}${it.dates.end && it.dates.end !== it.dates.start ? ' ~ ' + esc(it.dates.end) : ''}</span>`;
+  const isC = it.cat.startsWith('concert');
+  if (isC) {
+    tag = `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg" style="background:${st.bg};color:${st.fg}">${icon('calendar', 'w-3.5 h-3.5')}${esc(concertDateText(it))}</span>`;
   } else if (it.cat === 'fashion-artist' && it.tag) {
     tag = `<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-[#EEF0FF] text-[#4F46E5]">${icon('star', 'w-3.5 h-3.5')}By ${esc(it.tag)}</span>`;
   } else if (it.tag) {
@@ -524,12 +580,12 @@ function cardHtml(it) {
   const price = it.shop && it.shop.lowPrice ? `<span class="inline-flex items-center gap-1">${icon('store', 'w-3 h-3')}${esc(t('lowestPrice'))} ${it.shop.lowPrice.toLocaleString()}₩</span>` : '';
   return `<button data-item="${esc(it.id)}" class="w-full text-left bg-white rounded-[28px] p-5 shadow-[0_2px_14px_rgba(0,0,0,0.03)] border border-black/[0.03] hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] transition-all active:scale-[0.99]">
     <div class="flex items-start gap-4">
-      <div class="w-11 shrink-0 flex flex-col items-center gap-1"><div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold" style="background:${st.bg};color:${st.fg}">${it.rank}</div>${rankDeltaHtml(it, true)}</div>
+      ${isC ? concertBlock(it, st) : `<div class="w-11 shrink-0 flex flex-col items-center gap-1"><div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold" style="background:${st.bg};color:${st.fg}">${it.rank}</div>${rankDeltaHtml(it, true)}</div>`}
       <div class="flex-1 min-w-0">
         ${tag ? `<div class="mb-1.5">${tag}</div>` : ''}
         <h4 class="${it.cat.startsWith('concert') ? 'text-[20px] font-bold' : 'text-[17px] font-semibold'} tracking-tight leading-snug truncate">${esc(it.title)}</h4>
         ${it.subtitle ? `<p class="${it.cat.startsWith('concert') ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'} mt-0.5 truncate" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
-        ${it.cat.startsWith('concert') && it.tag ? `<p class="text-[12px] text-[#6E6E73] mt-1 truncate flex items-center gap-1">${icon('pin', 'w-3.5 h-3.5 shrink-0')}${esc(it.tag)}</p>` : ''}
+        ${isC && cleanTag(it.tag) ? `<p class="text-[12px] text-[#6E6E73] mt-1 truncate flex items-center gap-1">${icon('pin', 'w-3.5 h-3.5 shrink-0')}${esc(cleanTag(it.tag))}</p>` : ''}
         <p class="text-[13px] text-[#8E8E93] font-light mt-1.5 line-clamp-2 leading-relaxed">${esc(it.desc)}</p>
         <div class="flex items-center gap-3 mt-2 text-[11px] text-[#AEAEB2]">
           <span class="inline-flex items-center gap-1">${icon('trend', 'w-3 h-3')}${esc(t('score', { n: it.score ?? '-' }))}</span>${price}
@@ -695,8 +751,10 @@ function renderDetail() {
   $('#detailBody').innerHTML = `
     <div>
       <div class="flex items-center gap-2 mb-2 flex-wrap">
-        <span class="text-[13px] font-medium px-3 py-1 rounded-full" style="background:${st.bg};color:${st.fg}">${esc(t('rank', { n: it.rank }))}</span>${rankDeltaHtml(it)}
-        ${it.tag ? `<span class="text-[11px] px-2.5 py-1 rounded-full bg-[#F2F2F7] text-[#6E6E73]">${esc(it.tag)}</span>` : ''}
+        ${it.cat.startsWith('concert')
+          ? `<span class="text-[13px] font-semibold px-3 py-1 rounded-full inline-flex items-center gap-1" style="background:${st.bg};color:${st.fg}">${icon('calendar', 'w-3.5 h-3.5')}${esc(concertDateText(it))}</span>`
+          : `<span class="text-[13px] font-medium px-3 py-1 rounded-full" style="background:${st.bg};color:${st.fg}">${esc(t('rank', { n: it.rank }))}</span>${rankDeltaHtml(it)}`}
+        ${cleanTag(it.tag) ? `<span class="text-[11px] px-2.5 py-1 rounded-full bg-[#F2F2F7] text-[#6E6E73]">${esc(cleanTag(it.tag))}</span>` : ''}
       </div>
       <h3 class="text-[24px] font-bold tracking-tight leading-tight">${esc(it.title)}</h3>
       ${it.subtitle ? `<p class="text-[14px] font-medium mt-1" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
