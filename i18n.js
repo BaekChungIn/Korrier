@@ -358,4 +358,11 @@ window.I18N = {
   country: ['국가', 'Country', '国・地域', '国家/地区', 'País', 'Pays', 'ประเทศ'],
   countryPick: ['국가를 선택하세요', 'Select your country', '国・地域を選択', '请选择国家/地区', 'Elige tu país', 'Choisissez votre pays', 'เลือกประเทศ'],
   err_country_required: ['국가를 선택해 주세요', 'Please select your country', '国・地域を選択してください', '请选择国家/地区', 'Elige tu país', 'Choisissez votre pays', 'กรุณาเลือกประเทศ'],
+  sch_match: ['경기', 'Match', '試合', '比赛', 'Partido', 'Match', 'แข่งขัน'],
+  sch_youtube: ['유튜브', 'YouTube', 'YouTube', 'YouTube', 'YouTube', 'YouTube', 'YouTube'],
+  sch_festival: ['축제', 'Festival', 'フェス', '庆典', 'Festival', 'Festival', 'เทศกาล'],
+  sch_fashion: ['패션·화보', 'Fashion', 'ファッション', '时尚', 'Moda', 'Mode', 'แฟชั่น'],
+  sch_stage: ['무대', 'Stage', 'ステージ', '舞台', 'Escenario', 'Scène', 'เวที'],
+  sch_release: ['드라마·영화', 'Drama/Film', 'ドラマ・映画', '剧集·电影', 'Serie/Cine', 'Série/Film', 'ละคร/หนัง'],
+  moreTabs: ['더보기', 'More', 'もっと', '更多', 'Más', 'Plus', 'เพิ่มเติม'],
 };
