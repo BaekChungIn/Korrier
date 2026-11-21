@@ -116,7 +116,7 @@ function renderStarView() {
       <span class="text-[11px] truncate max-w-full ${x === st ? 'font-bold text-[#1D1D1F]' : 'text-[#8E8E93]'}">${esc(x.name)}</span></button>`).join('')
     + (S.stars.length < MAX_STARS ? `<button data-s="add" class="shrink-0 flex flex-col items-center gap-1 w-[60px]"><span class="w-[52px] h-[52px] rounded-full border-2 border-dashed border-[#D1D1D6] text-[#8E8E93] flex items-center justify-center">${icon('plus', 'w-5 h-5')}</span><span class="text-[11px] text-[#8E8E93]">${esc(t('addFriend'))}</span></button>` : '');
   v.innerHTML = `
-    <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1 pb-1">${chips}</div>
+    <div class="flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1.5 py-1.5">${chips}</div>
     <div class="relative overflow-hidden rounded-[30px] p-5 pb-6 text-white bg-gradient-to-br from-[#FF7EB3] via-[#E11D74] to-[#7C3AED] shadow-[0_14px_34px_rgba(225,29,116,0.28)]">
       <span class="absolute -right-10 -top-10 w-40 h-40 rounded-full bg-white/10"></span>
       <span class="absolute -left-8 -bottom-12 w-36 h-36 rounded-full bg-white/10"></span>
