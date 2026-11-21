@@ -1,9 +1,9 @@
 // =====================================================================
 // Korrier Edge Function (Supabase / Deno) — 파일 하나로 동작
-//   - 실시간 트렌드: Gemini(구글 검색 그라운딩) + 구글 트렌드 RSS
+//   - 실시간 트렌드: 네이버 뉴스·블로그 최근 7일 실제 글 + 구글 트렌드 RSS → AI(Groq 무료, OpenAI 호환)로 정리
 //   - 순위: 네이버 데이터랩 검색량 + 네이버 블로그/뉴스 최근 언급량 + (선택) X 언급량
 //   - 이미지/최저가: 네이버 이미지·쇼핑 / 위치: 카카오 로컬
-//   - 번역: Google Cloud Translation(선택) 또는 Gemini
+//   - 번역: Google Cloud Translation(선택) 또는 AI
 //   - AI 여론 요약 (로그인 사용자, 시간당 30회 제한)
 // 배포: supabase functions deploy korrier-api --no-verify-jwt
 // =====================================================================
@@ -14,10 +14,16 @@ const SERVICE_KEY = env("KORRIER_SERVICE_KEY") || env("SUPABASE_SERVICE_ROLE_KEY
 const ANON_KEY = env("SUPABASE_ANON_KEY") || SERVICE_KEY;
 
 const CFG = {
-  geminiKey: env("GEMINI_API_KEY"),
-  geminiModel: env("GEMINI_MODEL") || "gemini-2.5-flash",
+  // AI: OpenAI 호환 API (기본 Groq 무료 플랜). 다른 곳을 쓰려면 LLM_BASE_URL만 바꾸면 됨
+  llmBase: (env("LLM_BASE_URL") || "https://api.groq.com/openai/v1").replace(/\/$/, ""),
+  llmKey: env("LLM_API_KEY") || env("GROQ_API_KEY"),
+  llmModel: env("LLM_MODEL") || "openai/gpt-oss-120b",          // 트렌드 정리
+  llmFastModel: env("LLM_FAST_MODEL") || "openai/gpt-oss-20b",   // 번역 (모델별 무료 한도가 따로라 분리)
+  llmSearchModel: env("LLM_SEARCH_MODEL") || "groq/compound",    // 네이버 키가 없을 때 웹 검색용
   naverId: env("NAVER_CLIENT_ID"),
   naverSecret: env("NAVER_CLIENT_SECRET"),
+  // 2026-07-31부터 신규 키는 네이버 클라우드 NAVER API HUB에서만 발급 → 기본값 hub. 예전 개발자센터 키면 legacy
+  naverProvider: (env("NAVER_PROVIDER") || "hub").toLowerCase(),
   kakaoRest: env("KAKAO_REST_API_KEY"),
   googleTranslateKey: env("GOOGLE_TRANSLATE_API_KEY"),
   xBearer: env("X_BEARER_TOKEN"),
@@ -141,32 +147,46 @@ async function checkUsage(userId: string, kind: string, max: number) {
   await rest("korrier_usage", { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ user_id: userId, kind }) });
 }
 
-/* ---------------- Gemini ---------------- */
-async function gemini(prompt: string, { search = false, json = false, temperature = 0.4 } = {}) {
-  if (!CFG.geminiKey) throw new HttpError(503, "GEMINI_API_KEY 미설정");
-  const body: any = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { temperature, maxOutputTokens: 16384 },
-  };
-  if (search) body.tools = [{ google_search: {} }];
-  if (json && !search) body.generationConfig.responseMimeType = "application/json";
-  const r = await fetchJson(`https://generativelanguage.googleapis.com/v1beta/models/${enc(CFG.geminiModel)}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": CFG.geminiKey },
-    body: JSON.stringify(body),
-  }, 120000);
-  const cand = r.candidates?.[0];
-  const text = (cand?.content?.parts || []).map((p: any) => p.text || "").join("");
-  const sources = (cand?.groundingMetadata?.groundingChunks || []).map((c: any) => c.web).filter(Boolean).map((w: any) => ({ title: w.title || "", uri: w.uri }));
-  return { text, sources };
+/* ---------------- AI (OpenAI 호환 Chat Completions) ---------------- */
+async function llm(prompt: string, { model = CFG.llmModel, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
+  if (!CFG.llmKey) throw new HttpError(503, "LLM_API_KEY 미설정");
+  const body: any = { model, messages: [{ role: "user", content: prompt }], temperature, max_tokens: maxTokens };
+  if (json && !model.startsWith("groq/compound")) body.response_format = { type: "json_object" };
+  if (model.startsWith("openai/gpt-oss")) body.reasoning_effort = "low";
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${CFG.llmBase}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${CFG.llmKey}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(90000),
+    });
+    const text = await res.text();
+    // 무료 플랜 분당 한도 초과 → 잠시 기다렸다 재시도
+    if ((res.status === 429 || res.status === 503) && attempt < 3) {
+      const wait = Math.min(20, Number(res.headers.get("retry-after")) || 6 * (attempt + 1));
+      await sleep(wait * 1000);
+      continue;
+    }
+    let data: any = {};
+    try { data = JSON.parse(text); } catch { /* */ }
+    if (!res.ok) throw new HttpError(res.status === 429 ? 429 : 502, `AI: ${data?.error?.message || `HTTP ${res.status}`}`);
+    return data?.choices?.[0]?.message?.content || "";
+  }
 }
 
-/* ---------------- 네이버 ---------------- */
-const naverHeaders = () => ({ "X-Naver-Client-Id": CFG.naverId, "X-Naver-Client-Secret": CFG.naverSecret });
+/* ---------------- 네이버 (NAVER API HUB / 구 개발자센터) ---------------- */
+const NAVER_HUB = CFG.naverProvider !== "legacy";
+const naverHeaders = (): Record<string, string> => NAVER_HUB
+  ? { "X-NCP-APIGW-API-KEY-ID": CFG.naverId, "X-NCP-APIGW-API-KEY": CFG.naverSecret }
+  : { "X-Naver-Client-Id": CFG.naverId, "X-Naver-Client-Secret": CFG.naverSecret };
 const naverSearch = (kind: string, query: string, params: Record<string, string | number> = {}) => {
   const qs = new URLSearchParams({ query, ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) });
-  return fetchJson(`https://openapi.naver.com/v1/search/${kind}.json?${qs}`, { headers: naverHeaders() });
+  const url = NAVER_HUB
+    ? `https://naverapihub.apigw.ntruss.com/search/v1/${kind}?${qs}`
+    : `https://openapi.naver.com/v1/search/${kind}.json?${qs}`;
+  return fetchJson(url, { headers: naverHeaders() });
 };
+const NAVER_TREND_URL = NAVER_HUB ? "https://naverapihub.apigw.ntruss.com/search-trend/v1/search" : "https://openapi.naver.com/v1/datalab/search";
 async function naverBlogRecent(kw: string) {
   const r = await naverSearch("blog", kw, { display: 100, sort: "date" });
   const since = seoulDate(-7).replace(/-/g, "");
@@ -188,7 +208,7 @@ async function naverDatalab(keywords: string[]) {
   const avg = (res: any) => { const d = res?.data || []; return d.length ? d.reduce((s: number, x: any) => s + x.ratio, 0) / d.length : 0; };
   for (const batch of batches) {
     const groups = [{ groupName: "ANCHOR", keywords: [anchor] }, ...batch.map((b, j) => ({ groupName: `G${j}`, keywords: [b.k] }))];
-    const r = await fetchJson("https://openapi.naver.com/v1/datalab/search", {
+    const r = await fetchJson(NAVER_TREND_URL, {
       method: "POST",
       headers: { ...naverHeaders(), "content-type": "application/json" },
       body: JSON.stringify({ startDate: seoulDate(-8), endDate: seoulDate(-1), timeUnit: "date", keywordGroups: groups }),
@@ -208,16 +228,8 @@ async function naverImage(query: string) {
   const it = (r.items || [])[0];
   return it ? { url: it.link, thumb: it.thumbnail } : null;
 }
-async function naverShop(query: string) {
-  const r = await naverSearch("shop", query, { display: 10, sort: "sim" });
-  const items = (r.items || []).filter((it: any) => Number(it.lprice) > 0);
-  if (!items.length) return null;
-  const lowest = items.reduce((a: any, b: any) => (Number(b.lprice) < Number(a.lprice) ? b : a));
-  return {
-    lowPrice: Number(lowest.lprice), mall: lowest.mallName, link: lowest.link, image: items[0].image,
-    title: stripTags(items[0].title), compareUrl: `https://search.shopping.naver.com/search/all?query=${enc(query)}`,
-  };
-}
+/** 네이버 쇼핑 검색 API는 2026-07-31 종료 → 가격 비교는 네이버쇼핑 검색 링크로 안내 */
+const shopCompareUrl = (query: string) => `https://search.shopping.naver.com/search/all?query=${enc(query)}`;
 
 /* ---------------- X (선택) ---------------- */
 async function xRecentCount(kw: string) {
@@ -283,8 +295,9 @@ async function translateStrings(texts: string[], lang: string): Promise<string[]
   let out: any;
   if (CFG.googleTranslateKey) out = await googleTranslate(texts, lang);
   else {
-    const { text } = await gemini(`Translate each Korean string in the JSON array into ${LANG_NAMES[lang]}. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Return ONLY a JSON array of the same length.\n${JSON.stringify(texts)}`, { json: true, temperature: 0.2 });
-    out = parseJsonLoose(text);
+    const text = await llm(`Translate each Korean string in "texts" into ${LANG_NAMES[lang]}. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Return JSON {"texts":[...]} with the same number of strings in the same order.\n${JSON.stringify({ texts })}`, { model: CFG.llmFastModel, temperature: 0.1, maxTokens: 2000 });
+    const o = parseJsonLoose(text);
+    out = Array.isArray(o) ? o : o?.texts;
   }
   if (!Array.isArray(out) || out.length !== texts.length) throw new HttpError(502, "translate_parse_failed");
   out = out.map(String);
@@ -434,13 +447,10 @@ async function enrichItem(it: any) {
   const tasks: Promise<unknown>[] = [];
   if (HAS_NAVER) {
     tasks.push(naverImage(it.cat === "slang" ? `${it.title} 짤` : it.keyword).then((img) => { if (img) it.image = img; }).catch(() => {}));
-    if (it.cat === "beauty" || it.cat.startsWith("fashion")) {
-      tasks.push(naverShop(it.keyword).then((shop) => {
-        if (!shop) return;
-        it.shop = shop;
-        if (!it.link || it.cat === "beauty") it.link = shop.link;
-      }).catch(() => {}));
-    }
+  }
+  if (it.cat === "beauty" || it.cat.startsWith("fashion")) {
+    it.shop = { compareUrl: shopCompareUrl(it.keyword) };
+    if (it.cat === "beauty") it.link = shopCompareUrl(it.keyword);
   }
   if (it.location?.name) {
     tasks.push(kakaoFirstPlace(it.location.name).then((p) => {
@@ -456,6 +466,49 @@ async function enrichItem(it: any) {
   return it;
 }
 
+/* ---------- 실제 최신 글 수집 (네이버 뉴스·블로그 최근 7일) ---------- */
+const SEEDS: Record<string, string[]> = {
+  hotplace: ["팝업스토어 오픈", "핫플 웨이팅", "요즘 핫플"],
+  beauty: ["올리브영 랭킹", "품절 대란 화장품", "뷰티 신상 인기"],
+  "fashion-artist": ["공항패션 착용", "아이돌 착용 브랜드", "사복 패션 화제"],
+  "fashion-musinsa": ["무신사 랭킹", "무신사 인기 상품"],
+  "fashion-ably": ["에이블리 랭킹", "에이블리 인기 상품"],
+  concert: ["콘서트 티켓 오픈", "팬미팅 개최", "내한 공연 확정"],
+  slang: ["신조어 뜻", "요즘 유행어", "MZ 유행어"],
+};
+type Snip = { t: string; d: string; link: string; kind: string; date: string };
+async function collectSnippets(queries: string[], perQuery = 30, max = 26): Promise<Snip[]> {
+  const since = Date.now() - 7 * 86400e3;
+  const sinceBlog = seoulDate(-7).replace(/-/g, "");
+  const lists = await mapLimit(queries, 3, async (q) => {
+    const [news, blog] = await Promise.all([
+      naverSearch("news", q, { display: perQuery, sort: "date" }).catch(() => ({ items: [] })),
+      naverSearch("blog", q, { display: perQuery, sort: "date" }).catch(() => ({ items: [] })),
+    ]);
+    const a: Snip[] = (news.items || []).filter((x: any) => Date.parse(x.pubDate) >= since)
+      .map((x: any) => ({ t: stripTags(x.title), d: stripTags(x.description), link: x.originallink || x.link, kind: "뉴스", date: new Date(Date.parse(x.pubDate) + 9 * 3600e3).toISOString().slice(5, 10) }));
+    const b: Snip[] = (blog.items || []).filter((x: any) => (x.postdate || "") >= sinceBlog)
+      .map((x: any) => ({ t: stripTags(x.title), d: stripTags(x.description), link: x.link, kind: "블로그", date: `${x.postdate.slice(4, 6)}-${x.postdate.slice(6, 8)}` }));
+    return [a, b];
+  });
+  // 뉴스·블로그를 번갈아 섞고 제목 중복 제거
+  const pools = lists.flatMap((x) => x || [[], []]);
+  const out: Snip[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; out.length < max && pools.some((p) => p.length > i); i++) {
+    for (const p of pools) {
+      const x = p[i];
+      if (!x || out.length >= max) continue;
+      const key = x.t.replace(/\s+/g, "").slice(0, 30);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(x);
+    }
+  }
+  return out;
+}
+const snipText = (snips: Snip[]) => snips.map((x, i) => `[${i}] (${x.kind} ${x.date}) ${x.t} — ${x.d.slice(0, 80)}`).join("\n");
+
 async function buildTrends(cat: string) {
   const spec = SPECS[cat];
   const today = seoulDate();
@@ -464,9 +517,36 @@ async function buildTrends(cat: string) {
     const gt = await googleTrendsKR().catch(() => []);
     if (gt.length) hint = `\n참고: 지금 구글 트렌드 한국 급상승 검색어(검색량): ${gt.join(", ")}\n관련 있는 것이 있으면 우선 반영하세요.`;
   }
-  const { text, sources } = await gemini(`${spec.ask}을(를) 찾아주세요.${COMMON_RULES(today)}${hint}\n각 항목 형식: ${spec.fields}`, { search: true, temperature: 0.3 });
-  let cands = parseJsonLoose(text);
+  let text: string;
+  let sources: { title: string; uri: string }[] = [];
+  let snips: Snip[] = [];
+  if (HAS_NAVER) {
+    snips = await collectSnippets(SEEDS[cat]);
+    if (snips.length < 5) throw new HttpError(502, "not_enough_data");
+    text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 7일 동안 실제로 올라온 네이버 뉴스·블로그 글 목록입니다.${hint}
+이 자료에 나온 내용만 근거로 ${spec.ask.replace("15개", "12개").replace("15곳", "12곳")}을(를) 화제성 높은 순서로 골라주세요.
+- 자료에 없는 것은 절대 만들지 마세요. 모르는 필드는 빈 문자열.
+- 여러 글에 반복해서 나온 것을 우선하세요.
+- 각 항목에 근거가 된 글 번호를 "refs":[번호] 로 넣으세요.
+- 결과는 {"items":[...]} 형태의 JSON 하나만 출력하세요.
+각 항목 형식: ${spec.fields.replace(/,"sourceUrl":"[^"]*"/, "")} + "refs"
+
+자료:
+${snipText(snips)}`, { maxTokens: 3000 });
+  } else {
+    text = await llm(`${spec.ask}을(를) 웹 검색으로 찾아주세요.${COMMON_RULES(today)}${hint}\n결과는 {"items":[...]} 형태 JSON 하나만. 각 항목 형식: ${spec.fields}`, { model: CFG.llmSearchModel, maxTokens: 4000 });
+  }
+  const parsed = parseJsonLoose(text);
+  let cands = Array.isArray(parsed) ? parsed : parsed?.items;
   if (!Array.isArray(cands) || !cands.length) throw new HttpError(502, "ai_parse_failed");
+  // 근거 글 링크를 출처로 연결
+  const used = new Set<number>();
+  cands.forEach((c: any) => {
+    const refs = (Array.isArray(c?.refs) ? c.refs : []).map(Number).filter((n: number) => snips[n]);
+    refs.forEach((n: number) => used.add(n));
+    if (!c.sourceUrl && refs.length) c.sourceUrl = snips[refs[0]].link;
+  });
+  sources = [...used].slice(0, 12).map((n) => ({ title: snips[n].t, uri: snips[n].link }));
   cands = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c));
   if (cat === "concert") cands = cands.filter((c: any) => !c.endDate || c.endDate >= today);
   const seen = new Set<string>();
@@ -492,15 +572,16 @@ async function translateTrend(result: any, lang: string) {
   });
   const prompt = `You are a professional localizer for a Korea travel & trend app. Translate the Korean values of this JSON into ${LANG_NAMES[lang]}.
 Rules:
-- Keep "id" unchanged. Return the same JSON array structure with the same keys, ONLY JSON.
+- Keep "id" unchanged. Return JSON {"items":[...]} with the same objects and keys, ONLY JSON.
 - "title": localized name a foreign traveler would recognize (use the official foreign name if one exists, otherwise a natural translation/romanization).
 - "tag", "subtitle", "desc", "meaning": natural, fluent ${LANG_NAMES[lang]}.
 - "example": translate the Korean example sentence naturally.
 - "pron": write how the Korean word sounds using ${PRON_RULE[lang]}.
 - Dates and prices stay as they are.
-${JSON.stringify(payload)}`;
-  const { text } = await gemini(prompt, { json: true, temperature: 0.2 });
-  const arr = parseJsonLoose(text);
+${JSON.stringify({ items: payload })}`;
+  const text = await llm(prompt, { model: CFG.llmFastModel, temperature: 0.2, maxTokens: 4000 });
+  const parsedTr = parseJsonLoose(text);
+  const arr = Array.isArray(parsedTr) ? parsedTr : parsedTr?.items;
   if (!Array.isArray(arr)) throw new HttpError(502, "translate_parse_failed");
   const byId = new Map(arr.map((x: any) => [x.id, x]));
   const items = result.items.map((it: any) => {
@@ -563,11 +644,20 @@ async function aiOpinion(keyword: string, title: string, lang: string) {
   const ck = `op:${lang}:${hashId(keyword)}`;
   const hit = await cacheGet(ck);
   if (hit?.data && Date.now() - Date.parse(hit.data.updatedAt) < 30 * 60e3) return hit.data;
-  const prompt = `오늘은 ${seoulDate()}입니다. Google 검색을 사용해 최근 2주간 X(트위터), 인스타그램, 네이버 블로그·카페, 유튜브, 뉴스, 커뮤니티에서 "${keyword}"(${title})에 대한 실제 사람들의 반응을 조사하세요.
-조사 결과만 근거로 ${LANG_NAMES[lang]}로 작성하고, 다음 JSON 객체 하나만 출력하세요:
+  let snips: Snip[] = [];
+  let basisText: string;
+  if (HAS_NAVER) {
+    snips = await collectSnippets([keyword, `${keyword} 후기`], 30, 22);
+    basisText = `아래는 최근 7일 동안 실제로 올라온 네이버 뉴스·블로그 글입니다. 이 글들에 나타난 반응만 근거로`;
+  } else {
+    basisText = `웹 검색으로 최근 2주간 사람들의 실제 반응을 조사하고, 그 결과만 근거로`;
+  }
+  const prompt = `오늘은 ${seoulDate()}입니다. "${keyword}"(${title})에 대한 여론을 정리하세요.
+${basisText} ${LANG_NAMES[lang]}로 작성하고, 다음 JSON 객체 하나만 출력하세요:
 {"summary":"전체 여론 요약 4~5문장(구체적 근거 포함)","rating":1.0~5.0 사이 숫자(실제 반응의 긍정 비율 기반, 소수점 1자리),"positives":["긍정 포인트 최대 3개"],"negatives":["부정/주의 포인트 최대 3개"],"tip":"방문·구매·참여 전 실용 팁 1문장"}
-근거를 찾지 못하면 summary에 그렇다고 쓰고 rating은 null로 두세요.`;
-  const { text, sources } = await gemini(prompt, { search: true, temperature: 0.3 });
+근거를 찾지 못하면 summary에 그렇다고 쓰고 rating은 null로 두세요.${snips.length ? "\n\n자료:\n" + snipText(snips) : ""}`;
+  const text = await llm(prompt, { model: snips.length ? CFG.llmModel : CFG.llmSearchModel, maxTokens: 1500 });
+  const sources = snips.slice(0, 8).map((x) => ({ title: x.t, uri: x.link }));
   const obj = parseJsonLoose(text);
   if (!obj || typeof obj !== "object") throw new HttpError(502, "ai_parse_failed");
   const r = obj.rating == null ? null : Math.max(1, Math.min(5, Number(obj.rating) || 0));
@@ -599,8 +689,8 @@ async function handle(req: Request) {
     case "config":
       return {
         features: {
-          trends: !!CFG.geminiKey, ranking: HAS_NAVER, places: !!CFG.kakaoRest, x: !!CFG.xBearer,
-          translate: !!(CFG.geminiKey || CFG.googleTranslateKey),
+          trends: !!CFG.llmKey, ranking: HAS_NAVER, places: !!CFG.kakaoRest, x: !!CFG.xBearer,
+          translate: !!(CFG.llmKey || CFG.googleTranslateKey),
         },
         trendTtlMin: CFG.trendTtlMin,
       };
