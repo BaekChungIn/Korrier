@@ -179,6 +179,10 @@ async function loadFeed(name, force) {
     if (d.refreshing) setTimeout(() => { if (S.feeds[key] === d) loadFeed(name); }, 45e3);
   } catch (e) {
     S.feeds[key] = prev && !prev.loading && !prev.error ? prev : { error: e };
+    if ((e.status === 429 || e.status === 504 || e.code === 'ai_busy') && !(prev && prev.retried > 4)) {
+      S.feeds[key] = { loading: true, retried: ((prev && prev.retried) || 0) + 1 };
+      setTimeout(() => loadFeed(name), 20000);
+    }
   }
   if (S.tab === 'star' && curStar() && curStar().name === name && S.lang === lang) renderStarSeg();
 }
