@@ -355,4 +355,7 @@ window.I18N = {
   fr_exists: ['이미 친구이거나 요청 중이에요', 'Already friends or pending', 'すでに友達かリクエスト中です', '已是好友或请求中', 'Ya son amigos o está pendiente', 'Déjà amis ou en attente', 'เป็นเพื่อนแล้วหรือรออยู่'],
   fr_not_found: ['코드에 맞는 사용자가 없어요', 'No user with that code', 'そのコードのユーザーはいません', '没有找到该好友码的用户', 'No hay usuario con ese código', 'Aucun utilisateur avec ce code', 'ไม่พบผู้ใช้ที่มีรหัสนี้'],
   fr_self: ['내 코드예요', 'That’s your own code', '自分のコードです', '这是你自己的好友码', 'Es tu propio código', 'C’est votre code', 'นี่คือรหัสของคุณเอง'],
+  country: ['국가', 'Country', '国・地域', '国家/地区', 'País', 'Pays', 'ประเทศ'],
+  countryPick: ['국가를 선택하세요', 'Select your country', '国・地域を選択', '请选择国家/地区', 'Elige tu país', 'Choisissez votre pays', 'เลือกประเทศ'],
+  err_country_required: ['국가를 선택해 주세요', 'Please select your country', '国・地域を選択してください', '请选择国家/地区', 'Elige tu país', 'Choisissez votre pays', 'กรุณาเลือกประเทศ'],
 };
