@@ -1,6 +1,6 @@
 /* Korrier 서비스 워커 — 앱 화면은 오프라인에서도 열리고, 새 버전은 온라인일 때 바로 반영 */
-const VERSION = 'korrier-v2.0.0';
-const SHELL = ['./', './index.html', './app.js', './i18n.js', './icons.js', './config.js', './logo.svg', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
+const VERSION = 'korrier-v2.0.1';
+const SHELL = ['./', './index.html', './app.js', './i18n.js', './icons.js', './config.js', './logo.svg', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 const CDN = ['cdn.jsdelivr.net', 'unpkg.com'];
 
 self.addEventListener('install', (e) => {
