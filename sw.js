@@ -1,5 +1,5 @@
 /* Korrier 서비스 워커 — 앱 화면은 오프라인에서도 열리고, 새 버전은 온라인일 때 바로 반영 */
-const VERSION = 'korrier-v3.7.1';
+const VERSION = 'korrier-v3.7.2';
 const SHELL = ['./', './index.html', './app.js', './social.js', './i18n.js', './icons.js', './config.js', './logo.svg', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 const CDN = ['cdn.jsdelivr.net', 'unpkg.com'];
 
