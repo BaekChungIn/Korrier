@@ -370,4 +370,5 @@ window.I18N = {
   basis_kopis: ['공연예술통합전산망(KOPIS)', 'KOPIS performance DB', 'KOPIS公演DB', 'KOPIS演出数据库', 'base KOPIS', 'base KOPIS', 'ฐานข้อมูล KOPIS'],
   err_ai_busy: ['지금 검색이 몰려서 잠시 후 다시 시도할게요', 'Searches are busy right now. Retrying shortly', '検索が混み合っています。まもなく再試行します', '搜索繁忙，稍后自动重试', 'Hay muchas búsquedas. Reintentando en breve', 'Recherches chargées. Nouvel essai sous peu', 'การค้นหาหนาแน่น จะลองใหม่อีกครั้งเร็ว ๆ นี้'],
   autoRetry: ['처음 검색이라 조금 걸려요. 자동으로 다시 불러오는 중이에요', 'First search takes a moment. Loading again automatically', '初回検索のため少し時間がかかります。自動で再読み込み中です', '首次搜索需要一点时间，正在自动重新加载', 'La primera búsqueda tarda un poco. Recargando automáticamente', 'La première recherche prend un peu de temps. Rechargement automatique', 'การค้นหาครั้งแรกใช้เวลาสักครู่ กำลังโหลดใหม่อัตโนมัติ'],
+  basis_google: ['구글 검색', 'Google Search', 'Google検索', '谷歌搜索', 'Google', 'Google', 'Google'],
 };
