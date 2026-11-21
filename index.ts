@@ -342,6 +342,9 @@ const COMMON_RULES = (today: string) => `
 - 확인되지 않은 정보는 만들지 마세요. 모르는 필드는 빈 문자열.
 - 최대 30개, 화제성 높은 순서.`;
 
+/** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
+const TREND_VER = "trend:v5:";
+
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
 - 매장, 쇼핑몰·플랫폼 자체, 할인/쿠폰/세일/기획전/프로모션/이벤트/행사, 브랜드 소식, 랭킹 기사 제목은 절대 넣지 마세요.`;
@@ -376,8 +379,9 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
     ask: "오늘 이후(또는 진행 중) 한국에서 열리는 K-POP 아이돌·한국 가수·한국 배우/방송인의 콘서트·팬미팅",
     rule: `
 - 공연하는 주인공이 반드시 한국 연예인(K-POP 그룹/솔로, 유명 한국 가수, 한국 배우·방송인)이어야 합니다.
-- 클래식, 오케스트라, 송년음악회, 뮤지컬, 오페라, 합창, 해외 아티스트 내한, 출연진 없는 페스티벌은 제외.`,
-    fields: '{"artist":"아티스트(그룹/가수/배우) 이름","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
+- 클래식, 오케스트라, 송년음악회, 뮤지컬, 오페라, 합창, 해외 아티스트 내한, 출연진 없는 페스티벌, 대중에게 잘 알려지지 않은 인디 밴드·언더 공연은 제외.
+- artistType: K-POP 아이돌/그룹=kpop, 대중적으로 유명한 한국 가수=singer, 한국 배우=actor, 한국 방송인·예능인=entertainer, 그 밖(인디·클래식·해외·무명)=other.`,
+    fields: '{"artist":"아티스트(그룹/가수/배우) 이름","artistType":"kpop|singer|actor|entertainer|other","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
   },
   slang: {
     ask: "최근 한 달 한국 SNS·커뮤니티에서 실제로 많이 쓰이는 유행어·신조어",
@@ -386,7 +390,7 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
 };
 
 /** 제품 탭에 섞여 들어오는 행사·매장·프로모션 제거 */
-const NOT_PRODUCT = /할인|쿠폰|세일|기획전|프로모션|이벤트|행사|매장|스토어 오픈|오픈|팝업|블랙프라이데이|광군제|페스타|랭킹|콘텐츠|무료배송|적립|특가|위크|브랜드데이/;
+const NOT_PRODUCT = /할인|쿠폰|세일|기획전|프로모션|이벤트|행사|매장|스토어|지점|플래그십|특화|체험|공간|오픈|팝업|블랙프라이데이|광군제|페스타|랭킹|콘텐츠|무료배송|적립|특가|위크|브랜드데이/;
 const PLATFORM = /^(에이블리|ABLY|무신사|MUSINSA|올리브영|OLIVE ?YOUNG|지그재그|29CM|W컨셉)$/i;
 const NOT_KCONCERT = /오케스트라|클래식|교향|필하모닉|송년음악회|신년음악회|뮤지컬|오페라|합창|발레|국악관현악/;
 function validCandidate(cat: string, c: any): boolean {
@@ -399,7 +403,7 @@ function validCandidate(cat: string, c: any): boolean {
     if (cat === "fashion-artist" && !s(c.artist)) return false;
     return true;
   }
-  if (cat === "concert") return !!(s(c.artist) && s(c.title)) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
+  if (cat === "concert") return !!(s(c.artist) && s(c.title)) && ["kpop", "singer", "actor", "entertainer"].includes(s(c.artistType).toLowerCase()) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
   if (cat === "hotplace") return !!s(c.name);
   if (cat === "slang") return !!s(c.word);
   return true;
@@ -694,7 +698,7 @@ function background(p: Promise<unknown>) {
   if (rt?.waitUntil) rt.waitUntil(safe);
 }
 async function rebuild(cat: string) {
-  const key = `trend:${cat}`;
+  const key = `${TREND_VER}${cat}`;
   if (!(await tryLock(key))) return false;
   try {
     const base = await buildTrends(cat);
@@ -708,7 +712,7 @@ async function rebuild(cat: string) {
 
 async function getTrends(cat: string, lang: string, force: boolean) {
   if (!SPECS[cat]) throw new HttpError(404, "unknown_category");
-  const key = `trend:${cat}`;
+  const key = `${TREND_VER}${cat}`;
   const ttl = CFG.trendTtlMin * 60e3;
   let row = await cacheGet(key);
   let base = row?.data || null;
@@ -734,7 +738,7 @@ async function getTrends(cat: string, lang: string, force: boolean) {
 async function warmOne() {
   const cats = Object.keys(SPECS);
   const ages = await Promise.all(cats.map(async (c) => {
-    const r = await cacheGet(`trend:${c}`).catch(() => null);
+    const r = await cacheGet(`${TREND_VER}${c}`).catch(() => null);
     return { c, at: r?.data?.updatedAt ? Date.parse(r.data.updatedAt) : 0 };
   }));
   ages.sort((a, b) => a.at - b.at);
