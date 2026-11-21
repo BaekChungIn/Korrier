@@ -28,7 +28,14 @@ const CFG = {
   kakaoRest: env("KAKAO_REST_API_KEY"),
   googleTranslateKey: env("GOOGLE_TRANSLATE_API_KEY"),
   xBearer: env("X_BEARER_TOKEN"),
-  kopisKey: env("KOPIS_API_KEY"),          // 공연예술통합전산망(KOPIS) 공연목록 → 콘서트 탭
+  kopisKey: env("KOPIS_API_KEY"),
+  // Gemini(1순위 AI) + 구글 검색 연동(Grounding). 없거나 한도가 차면 Groq로 자동 전환
+  geminiKey: env("GEMINI_API_KEY"),
+  geminiModels: (env("GEMINI_MODELS") || "gemini-2.5-flash,gemini-2.5-flash-lite").split(",").map((x: string) => x.trim()).filter(Boolean),
+  // Bright Data SERP API: 구글 검색 결과(무료 월 5,000건) → 하루 사용량 제한
+  brightKey: env("BRIGHTDATA_API_KEY"),
+  brightZone: env("BRIGHTDATA_ZONE") || "serp_api1",
+  brightDaily: Number(env("BRIGHTDATA_DAILY_LIMIT")) || 150,          // 공연예술통합전산망(KOPIS) 공연목록 → 콘서트 탭
   kakaoJsKey: env("KAKAO_JS_KEY"),         // 카카오맵 지도(JavaScript 키, 공개돼도 되는 키)
   trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 240,
   maxItems: 50,
@@ -184,8 +191,89 @@ function llm(prompt: string, opts: { models?: string[]; json?: boolean; temperat
   llmChain = run.catch(() => {});
   return run;
 }
+/* ---------- Gemini ---------- */
+async function geminiOnce(model: string, prompt: string, o: { json?: boolean; temperature?: number; maxTokens?: number; search?: boolean }) {
+  const gen: any = { temperature: o.temperature ?? 0.3, maxOutputTokens: o.maxTokens || 4096 };
+  if (o.json && !o.search) gen.responseMimeType = "application/json";
+  if (/^gemini-2\.5-flash/.test(model)) gen.thinkingConfig = { thinkingBudget: 0 };
+  const body: any = { contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: gen };
+  if (o.search) body.tools = [{ google_search: {} }];
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": CFG.geminiKey }, body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
+  });
+  const data: any = await res.json().catch(() => ({}));
+  const cand = data?.candidates?.[0];
+  const text = (cand?.content?.parts || []).map((x: any) => x.text || "").join("");
+  const sources = (cand?.groundingMetadata?.groundingChunks || []).map((c: any) => ({ title: c.web?.title || "", uri: c.web?.uri || "" })).filter((x: any) => x.uri);
+  return { res, data, text, sources };
+}
+/** Gemini 실패 기록: 분당 한도면 1분, 하루 한도면 3시간, 모델 없음이면 6시간 쉼 */
+function geminiFail(key: string, res: Response, data: any) {
+  const msg = JSON.stringify(data?.error || {}).slice(0, 400);
+  if (res.status === 429) deadModels.set(key, Date.now() + (/PerDay|per day|daily/i.test(msg) ? 3 * 3600e3 : 60e3));
+  else if (res.status === 404 || res.status === 400 && /model|not found|not supported/i.test(msg)) deadModels.set(key, Date.now() + 6 * 3600e3);
+  else if (res.status === 403 || res.status === 401) deadModels.set(key, Date.now() + 3600e3);
+  return `gemini ${res.status}: ${msg.slice(0, 160)}`;
+}
+async function geminiText(prompt: string, o: { json?: boolean; temperature?: number; maxTokens?: number }) {
+  if (!CFG.geminiKey) return null;
+  for (const model of CFG.geminiModels) {
+    if ((deadModels.get("g:" + model) || 0) > Date.now()) continue;
+    try {
+      const r = await geminiOnce(model, prompt, o);
+      if (r.res.ok && r.text) return r.text;
+      if (!r.res.ok) console.warn(geminiFail("g:" + model, r.res, r.data));
+    } catch (e) { console.warn("[gemini]", (e as Error).message); }
+  }
+  return null;
+}
+/** 구글 검색 연동(Grounding): 답 + 출처 링크. 안 되면 null */
+async function geminiSearch(prompt: string, maxTokens = 6000): Promise<{ text: string; sources: { title: string; uri: string }[] } | null> {
+  if (!CFG.geminiKey) return null;
+  for (const model of CFG.geminiModels) {
+    const key = "gs:" + model;
+    if ((deadModels.get(key) || 0) > Date.now()) continue;
+    try {
+      const r = await geminiOnce(model, prompt, { search: true, temperature: 0.2, maxTokens });
+      if (r.res.ok && r.text) return { text: r.text, sources: r.sources };
+      if (!r.res.ok) console.warn(geminiFail(key, r.res, r.data));
+    } catch (e) { console.warn("[gemini search]", (e as Error).message); }
+  }
+  return null;
+}
+
+/* ---------- Bright Data SERP (구글 검색 결과) ---------- */
+let brightToday = { day: "", n: 0 };
+async function brightSearch(q: string, max = 10): Promise<Snip[]> {
+  if (!CFG.brightKey) return [];
+  const day = seoulDate();
+  if (brightToday.day !== day) {
+    const c = await cacheGet(`bd:${day}`).catch(() => null);
+    brightToday = { day, n: Number(c?.data?.n) || 0 };
+  }
+  if (brightToday.n >= CFG.brightDaily) return [];
+  brightToday.n++;
+  cacheSet(`bd:${day}`, { n: brightToday.n }).catch(() => {});
+  try {
+    const url = `https://www.google.com/search?q=${enc(q)}&hl=ko&gl=kr&brd_json=1`;
+    const r = await fetch("https://api.brightdata.com/request", {
+      method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${CFG.brightKey}` },
+      body: JSON.stringify({ zone: CFG.brightZone, url, format: "raw" }), signal: AbortSignal.timeout(25000),
+    });
+    const txt = await r.text();
+    if (!r.ok) { console.warn("[brightdata]", r.status, txt.slice(0, 160)); return []; }
+    const data = parseJsonLoose(txt) || {};
+    const md = seoulDate().slice(5);
+    return (data.organic || []).slice(0, max).map((x: any) => ({ t: stripTags(x.title || ""), d: stripTags(x.description || x.snippet || "").slice(0, 160), link: x.link || x.url || "", kind: "구글", date: md }))
+      .filter((x: Snip) => x.t && x.link);
+  } catch (e) { console.warn("[brightdata]", (e as Error).message); return []; }
+}
+
 async function llmInner(prompt: string, { models = CFG.llmModels, json = true, temperature = 0.3, maxTokens = 4096 } = {}): Promise<string> {
-  if (!CFG.llmKey) throw new HttpError(503, "LLM_API_KEY 미설정");
+  // 1순위: Gemini (분당 토큰 한도가 넉넉함)
+  const g = await geminiText(prompt, { json, temperature, maxTokens });
+  if (g) return g;
+  if (!CFG.llmKey) throw new HttpError(CFG.geminiKey ? 429 : 503, CFG.geminiKey ? "ai_busy" : "LLM_API_KEY 미설정");
   const inTok = estTokens(prompt);
   let lastErr = "no_model";
   for (let round = 0; round < 3; round++) {
@@ -366,7 +454,7 @@ const COMMON_RULES = (today: string) => `
 - 최대 30개, 화제성 높은 순서.`;
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
-const TREND_VER = "trend:v8:";
+const TREND_VER = "trend:v9:";
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -785,11 +873,15 @@ async function buildTrends(cat: string) {
   }
   let cands: any[] = [];
   let sources: { title: string; uri: string }[] = [];
+  let usedGoogle = false;
   // 콘서트: 공연예술통합전산망(KOPIS)에 실제 등록된 공연을 먼저
   const kopis = cat.startsWith("concert") && CFG.kopisKey ? await kopisCandidates(cat).catch((e) => { console.warn("[kopis]", (e as Error).message); return []; }) : [];
   if (HAS_NAVER) {
     const opt = BUILD_OPT[cat] || { days: 7, per: 40, max: 70 };
     let snips = await collectSnippets(SEEDS[cat], opt.per, opt.max, opt.days);
+    // 구글 검색 결과(Bright Data)를 앞에 추가
+    const gs = (await Promise.all(SEEDS[cat].slice(0, 2).map((q) => brightSearch(q, 10)))).flat();
+    if (gs.length) { snips = [...gs, ...snips].slice(0, opt.max + 20); usedGoogle = true; }
     if (cat === "fashion-artist") snips = [...(await inkistyleSnips()), ...snips].slice(0, opt.max + 20);
     if (snips.length >= 5) {
       const r = await pickCandidates(cat, snips, hint);
@@ -803,6 +895,15 @@ async function buildTrends(cat: string) {
         const r2 = await pickCandidates(cat, more, hint).catch(() => ({ cands: [], sources: [] }));
         cands = cands.concat(r2.cands); sources = sources.concat(r2.sources);
       }
+    }
+    // Gemini 구글 검색 연동으로 직접 찾은 후보도 합침
+    const gr = await geminiSearch(`오늘은 ${today}(한국 시간)입니다. 구글 검색으로 최근 2주 동안 실제로 화제가 된 ${spec.ask}을(를) 찾아 최대 30개, 화제성 높은 순서로 정리하세요.${spec.rule || ""}
+- 검색으로 확인된 것만. 모르는 필드는 빈 문자열.
+- JSON 하나만 출력: {"items":[...]} 각 항목 형식: ${spec.fields}`).catch(() => null);
+    if (gr) {
+      const o = parseJsonLoose(gr.text);
+      const gc = (Array.isArray(o) ? o : o?.items || []).filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
+      if (gc.length) { cands = cands.concat(gc); sources = sources.concat(gr.sources.slice(0, 6)); usedGoogle = true; }
     }
     if (!cands.length && !kopis.length && snips.length < 5) throw new HttpError(502, "not_enough_data");
   } else {
@@ -829,6 +930,7 @@ async function buildTrends(cat: string) {
   await mapLimit(items, 6, enrichItem);
   items.forEach((it: any, i: number) => { it.rank = i + 1; });
   if (kopis.length) scored.basis.push("kopis");
+  if (usedGoogle) scored.basis.push("google");
   return { cat, items, sources: sources.slice(0, 12), basis: scored.basis, updatedAt: new Date().toISOString() };
 }
 
@@ -1114,7 +1216,10 @@ async function buildStarFeed(name: string, sub = "") {
 
   let schedule: any[] = [];
   let aiFailed = !CFG.llmKey;
-  const pool = [...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 120);
+  const athlete = ATHLETE.test(sub);
+  const gSnips = (await Promise.all([brightSearch(`${name} 일정`, 10), brightSearch(athlete ? `${name} 다음 경기 일정` : `${name} 컴백 콘서트 팬미팅 일정`, 10)])).flat()
+    .map((x) => ({ title: x.t, desc: x.d, link: x.link, date: seoulDate() }));
+  const pool = [...gSnips, ...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 120);
   if (pool.length && CFG.llmKey) {
     const today = seoulDate();
     const prompt = `오늘은 ${today}입니다. 아래는 "${name}"${sub ? `(${sub})` : ""} 관련 최근 네이버 뉴스입니다.
@@ -1147,6 +1252,19 @@ ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 80)}`)
     } catch (e) { console.warn("[star schedule]", (e as Error).message); aiFailed = true; }
   }
   const today = seoulDate();
+  // Gemini 구글 검색 연동: 공식 일정·경기 일정표까지 직접 검색
+  const gr = await geminiSearch(`오늘은 ${today}입니다. 구글 검색으로 "${name}"${sub ? `(${sub})` : ""}의 오늘 이후 일정을 모두 찾아주세요.
+${athlete ? "소속팀·대표팀의 다음 경기 일정(상대팀, 날짜, 시간, 경기장), 방송·광고·행사 출연" : "콘서트·투어, 팬미팅·팬사인회, 컴백·발매, 음악방송·무대, 예능·라디오·유튜브 출연, 대학 축제·페스티벌, 패션쇼·화보, 시상식, 드라마·영화 공개"}.
+날짜가 확인된 것만. 이미 지난 일정 제외. 시간은 한국 시간.
+JSON 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"${SCH_TYPES.join("|")}","title":"짧은 일정 이름(한국어)","place":"장소·채널·방송사"}]}`, 3000).catch(() => null);
+  if (gr) {
+    const o = parseJsonLoose(gr.text);
+    const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const gsched = (Array.isArray(o?.schedule) ? o.schedule : []).filter((x: any) => isD(x?.date) && (isD(x.endDate) ? x.endDate : x.date) >= today && x.title)
+      .map((x: any, i: number) => ({ date: x.date, endDate: isD(x.endDate) ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "", type: SCH_TYPES.includes(x.type) ? x.type : "event", title: String(x.title).slice(0, 80), place: String(x.place || "").slice(0, 60), link: gr.sources[i % Math.max(1, gr.sources.length)]?.uri || "" }));
+    schedule = [...gsched, ...schedule];
+    if (gsched.length) aiFailed = false;
+  }
   // AI가 못 했거나 빠진 것은 규칙으로 직접 뽑은 일정으로 채움
   const rules = ruleSchedule(name, pool, today);
   // 공연예술통합전산망(KOPIS)에 등록된 이 스타의 공연
@@ -1216,8 +1334,9 @@ async function handle(req: Request) {
     case "config":
       return {
         features: {
-          trends: !!CFG.llmKey, ranking: HAS_NAVER, places: !!CFG.kakaoRest, x: !!CFG.xBearer,
-          translate: !!(CFG.llmKey || CFG.googleTranslateKey), kopis: !!CFG.kopisKey,
+          trends: !!(CFG.llmKey || CFG.geminiKey), ranking: HAS_NAVER, places: !!CFG.kakaoRest, x: !!CFG.xBearer,
+          translate: !!(CFG.llmKey || CFG.geminiKey || CFG.googleTranslateKey), kopis: !!CFG.kopisKey,
+          google: !!(CFG.geminiKey || CFG.brightKey),
         },
         kakaoJsKey: CFG.kakaoJsKey || "",
         trendTtlMin: CFG.trendTtlMin,
