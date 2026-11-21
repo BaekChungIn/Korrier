@@ -46,6 +46,7 @@ const S = {
   detail: null,
   authMode: 'login',
   concertSub: 'kpop',
+  retries: {},
   stars: [],
   starIdx: 0,
   starSeg: 'schedule',
@@ -355,10 +356,20 @@ function fetchCat(cat, lang, force) {
     try {
       const data = await fn('trends', { cat, lang, force: !!force });
       S.trends[key] = data;
+      delete S.retries[key];
       // 서버가 오래된 결과를 주고 뒤에서 새로 검색 중이면 잠시 뒤 다시 받아옴
       if (data.refreshing) setTimeout(() => fetchCat(cat, lang, false).then(() => afterFetch(cat, lang)).catch(() => {}), 45000);
       return data;
-    } catch (e) { S.errors[key] = e; throw e; }
+    } catch (e) {
+      // AI 사용량이 잠깐 많거나 첫 검색이 오래 걸리면 자동으로 다시 시도
+      const n = (S.retries[key] || 0) + 1;
+      if ((e.status === 429 || e.status === 504 || e.code === 'ai_busy' || e.code === 'network') && n <= 6) {
+        S.retries[key] = n;
+        e.retrying = true;
+        setTimeout(() => { if (S.lang === lang) fetchCat(cat, lang, false).then(() => afterFetch(cat, lang)).catch(() => afterFetch(cat, lang)); }, 15000 + n * 5000);
+      }
+      S.errors[key] = e; throw e;
+    }
     finally { delete S.loading[key]; }
   })();
   S.loading[key] = p;
@@ -436,11 +447,12 @@ function renderList() {
   renderMeta(data);
 
   if (!data && loading) { area.innerHTML = loadingHtml(); return; }
+  if (!data && err && err.retrying) { area.innerHTML = `<div class="bg-[#EEF4FF] text-[#1E3A8A] text-[12px] rounded-2xl px-4 py-2.5 flex items-center gap-2">${icon('clock', 'w-4 h-4 shrink-0')}<span>${esc(t('autoRetry'))}</span></div>` + loadingHtml(); return; }
   if (!data && err) { area.innerHTML = errorHtml(err); return; }
   if (!data) { area.innerHTML = loadingHtml(); return; }
   if (!data.items || !data.items.length) { area.innerHTML = `<div class="text-center text-[13px] text-[#8E8E93] py-10">${esc(t('empty'))}</div>`; return; }
 
-  const errBanner = err ? `<div class="bg-amber-50 border border-amber-100 text-amber-800 text-[12px] rounded-2xl px-4 py-2.5 flex items-center gap-2">${icon('alert', 'w-4 h-4')}<span>${esc(errText(err))}</span></div>` : '';
+  const errBanner = err && !err.retrying ? `<div class="bg-amber-50 border border-amber-100 text-amber-800 text-[12px] rounded-2xl px-4 py-2.5 flex items-center gap-2">${icon('alert', 'w-4 h-4')}<span>${esc(errText(err))}</span></div>` : '';
   const total = data.items.length;
   const shown = Math.min(total, S.shown[cat] || 10);
   const items = data.items.slice(0, shown);
