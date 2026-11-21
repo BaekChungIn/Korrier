@@ -28,6 +28,8 @@ const CFG = {
   kakaoRest: env("KAKAO_REST_API_KEY"),
   googleTranslateKey: env("GOOGLE_TRANSLATE_API_KEY"),
   xBearer: env("X_BEARER_TOKEN"),
+  kopisKey: env("KOPIS_API_KEY"),          // 공연예술통합전산망(KOPIS) 공연목록 → 콘서트 탭
+  kakaoJsKey: env("KAKAO_JS_KEY"),         // 카카오맵 지도(JavaScript 키, 공개돼도 되는 키)
   trendTtlMin: Number(env("TREND_CACHE_MINUTES")) || 180,
   maxItems: 50,
   allowedOrigin: env("ALLOWED_ORIGIN") || "*",
@@ -343,7 +345,7 @@ const COMMON_RULES = (today: string) => `
 - 최대 30개, 화제성 높은 순서.`;
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
-const TREND_VER = "trend:v6:";
+const TREND_VER = "trend:v7:";
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -376,12 +378,20 @@ const SPECS: Record<string, { ask: string; rule?: string; fields: string }> = {
     fields: '{"brand":"마켓/브랜드","item":"상품명","price":"판매가(원)","summary":"인기 이유 1문장"}',
   },
   concert: {
-    ask: "오늘 이후(또는 진행 중) 한국에서 열리는 K-POP 아이돌·한국 가수·한국 배우/방송인의 콘서트·팬미팅",
+    ask: "오늘 이후(또는 진행 중) 한국에서 열리는 K-POP 아이돌 그룹·솔로의 콘서트(단독·투어·앙코르·팬콘)와 한국 가수·한국 배우/방송인의 콘서트·팬미팅. 아이돌 공연을 빠짐없이 우선",
     rule: `
 - 공연하는 주인공이 반드시 한국 연예인(K-POP 그룹/솔로, 유명 한국 가수, 한국 배우·방송인)이어야 합니다.
 - 클래식, 오케스트라, 송년음악회, 뮤지컬, 오페라, 합창, 해외 아티스트 내한, 출연진 없는 페스티벌, 대중에게 잘 알려지지 않은 인디 밴드·언더 공연은 제외.
 - artistType: K-POP 아이돌/그룹=kpop, 대중적으로 유명한 한국 가수=singer, 한국 배우=actor, 한국 방송인·예능인=entertainer, 그 밖(인디·클래식·해외·무명)=other.`,
     fields: '{"artist":"아티스트(그룹/가수/배우) 이름","artistType":"kpop|singer|actor|entertainer|other","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
+  },
+  "concert-global": {
+    ask: "오늘 이후(또는 진행 중) 한국에서 열리는 해외(글로벌) 가수·밴드·배우의 내한 콘서트·내한 팬미팅",
+    rule: `
+- 공연하는 주인공이 반드시 한국인이 아닌 해외 아티스트여야 합니다(팝스타, J-POP, 해외 밴드, 해외 배우 등).
+- 한국 연예인 공연, 클래식·오케스트라·뮤지컬·오페라 내한, 여러 팀이 나오는 페스티벌은 제외.
+- artistType은 해외 아티스트면 global, 아니면 other.`,
+    fields: '{"artist":"아티스트 이름(한국어 표기, 영어 병기 가능)","artistType":"global|other","title":"공연명","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD","venue":"공연장","city":"도시","ticketVendor":"예매처","summary":"공연 소개 1~2문장"}',
   },
   slang: {
     ask: "지금 한국 SNS(X·인스타·틱톡·쇼츠)와 커뮤니티에서 실제로 쓰이는 유행어·신조어·밈 표현",
@@ -409,6 +419,7 @@ function validCandidate(cat: string, c: any): boolean {
     return true;
   }
   if (cat === "concert") return !!(s(c.artist) && s(c.title)) && ["kpop", "singer", "actor", "entertainer"].includes(s(c.artistType).toLowerCase()) && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
+  if (cat === "concert-global") return !!(s(c.artist) && s(c.title)) && s(c.artistType).toLowerCase() === "global" && !NOT_KCONCERT.test(`${c.artist} ${c.title}`);
   if (cat === "hotplace") return !!s(c.name);
   if (cat === "slang") return !!s(c.word) && s(c.word).length <= 15 && ["slang", "meme", "challenge"].includes(s(c.type).toLowerCase()) && !/^[A-Z0-9 ]+$/.test(s(c.word));
   return true;
@@ -416,7 +427,7 @@ function validCandidate(cat: string, c: any): boolean {
 
 function keyOf(cat: string, c: any): string {
   if (cat === "slang") return c.word;
-  if (cat === "concert") return `${c.artist || ""} ${c.title || ""}`.trim();
+  if (cat.startsWith("concert")) return `${c.artist || ""} ${c.title || ""}`.trim();
   if (cat === "beauty") return `${c.brand || ""} ${c.name || ""}`.trim();
   if (cat.startsWith("fashion")) return `${c.artist || ""} ${c.brand || ""} ${c.item || ""}`.trim();
   return c.name;
@@ -453,6 +464,9 @@ function baseItem(cat: string, c: any): any {
       });
       break;
     case "concert":
+    case "concert-global":
+      if (c.poster) item.image = { url: c.poster, thumb: c.poster };
+      if (c.kopisId) item.kopisId = c.kopisId;
       Object.assign(item, {
         title: c.artist, subtitle: c.title, tag: [c.venue, c.city].filter(Boolean).join(" · "),
         dates: { start: c.startDate || "", end: c.endDate || c.startDate || "" },
@@ -515,7 +529,8 @@ async function scoreItems(items: any[]) {
 
 async function enrichItem(it: any) {
   const tasks: Promise<unknown>[] = [];
-  if (HAS_NAVER) {
+  if (it.kopisId && CFG.kopisKey) tasks.push(kopisDetail(it).catch(() => {}));
+  if (HAS_NAVER && !it.image) {
     tasks.push(naverImage(it.cat === "slang" ? `${it.title} 짤` : it.keyword).then((img) => { if (img) it.image = img; }).catch(() => {}));
   }
   if (it.cat === "beauty" || it.cat.startsWith("fashion")) {
@@ -551,11 +566,25 @@ async function locate(loc: any) {
 const SEEDS: Record<string, string[]> = {
   hotplace: ["팝업스토어 오픈", "핫플 웨이팅", "요즘 핫플", "성수 팝업", "신상 카페 웨이팅", "전시 오픈 화제"],
   beauty: ["올리브영 랭킹 1위", "품절 대란 화장품", "올리브영 추천템", "선크림 인기", "쿠션 인기 제품", "립 신상 인기"],
-  "fashion-artist": ["공항패션 착용 브랜드", "아이돌 착용 제품", "착용해 화제 브랜드", "사복 패션 정보", "배우 착용 가방"],
-  "fashion-musinsa": ["무신사 랭킹 1위", "무신사 인기 상품", "무신사 품절", "무신사 추천템"],
-  "fashion-ably": ["에이블리 랭킹 1위", "에이블리 인기 상품", "에이블리 추천템", "에이블리 구매 후기"],
-  concert: ["단독 콘서트 개최", "팬미팅 개최 확정", "아이돌 콘서트 티켓 오픈", "월드투어 서울 공연", "전국투어 콘서트", "배우 팬미팅"],
+  "fashion-artist": ["공항패션 착용 브랜드", "아이돌 착용 제품", "착용해 화제 브랜드", "사복 패션 정보", "배우 착용 가방", "출근길 패션 브랜드", "착장 정보 브랜드"],
+  "fashion-musinsa": ["무신사 랭킹 1위", "무신사 인기 상품", "무신사 품절", "무신사 추천템", "무신사 랭킹 상품", "무신사 급상승"],
+  "fashion-ably": ["에이블리 랭킹 1위", "에이블리 인기 상품", "에이블리 추천템", "에이블리 구매 후기", "에이블리 랭킹 상품", "에이블리 판매 1위"],
+  concert: ["아이돌 콘서트 개최", "단독 콘서트 개최 확정", "팬미팅 개최 확정", "콘서트 티켓 오픈", "월드투어 서울 공연", "팬콘서트 개최", "앙코르 콘서트", "배우 팬미팅"],
+  "concert-global": ["내한 공연 확정", "내한 콘서트", "첫 내한", "내한 팬미팅", "단독 내한", "월드투어 서울 내한"],
   slang: ["캐릿 요즘 뜨는 밈", "트렌드어워드 신조어", "요즘 유행하는 밈 뜻", "신조어 뜻 유래", "MZ 신조어 정리", "유행어 뜻 밈 유래", "트위터 유행어", "더쿠 유행어", "쇼츠 유행 밈", "챌린지 유행어"],
+};
+/** 첫 검색에서 10개가 안 되면 추가로 찾는 검색어 */
+const EXTRA_SEEDS: Record<string, string[]> = {
+  "fashion-artist": ["공항패션 브랜드 정보", "제작발표회 의상 브랜드", "인스타 사복 브랜드", "착용 완판", "착용템 정보", "화보 착용 브랜드", "레드카펫 드레스 브랜드", "아이돌 사복 가방"],
+  "fashion-musinsa": ["무신사 판매 1위", "무신사 완판", "무신사 단독 발매", "무신사 스탠다드 인기", "무신사 겨울 인기", "무신사 베스트 상품", "무신사 후기 추천"],
+  "fashion-ably": ["에이블리 품절", "에이블리 겨울 코디 추천템", "에이블리 인기 니트", "에이블리 인기 아우터", "에이블리 베스트", "에이블리 하울"],
+  concert: ["데뷔 첫 콘서트", "콘서트 개최 소식", "투어 서울 공연 확정", "팬미팅 티켓 오픈", "단독 팬미팅"],
+  "concert-global": ["내한 확정", "내한 티켓 오픈", "내한공연 예매"],
+};
+/** 카테고리별 수집 기간(일)·검색어당 글 수·최대 자료 수 */
+const BUILD_OPT: Record<string, { days: number; per: number; max: number }> = {
+  "fashion-artist": { days: 14, per: 40, max: 75 }, "fashion-musinsa": { days: 30, per: 40, max: 75 }, "fashion-ably": { days: 30, per: 40, max: 75 },
+  concert: { days: 21, per: 40, max: 75 }, "concert-global": { days: 30, per: 40, max: 70 }, slang: { days: 30, per: 30, max: 90 },
 };
 type Snip = { t: string; d: string; link: string; kind: string; date: string };
 async function collectSnippets(queries: string[], perQuery = 40, max = 70, days = 7): Promise<Snip[]> {
@@ -590,6 +619,99 @@ async function collectSnippets(queries: string[], perQuery = 40, max = 70, days 
 }
 const snipText = (snips: Snip[]) => snips.map((x, i) => `[${i}] (${x.kind} ${x.date}) ${x.t} — ${x.d.slice(0, 55)}`).join("\n");
 
+
+/* ---------------- KOPIS (공연예술통합전산망) ---------------- */
+const KOPIS_BASE = "http://www.kopis.or.kr/openApi/restful";
+const xmlVal = (block: string, tag: string) => {
+  const m = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return m ? m[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim() : "";
+};
+const kDate = (v: string) => (v || "").replace(/\./g, "-").slice(0, 10);
+const ymd = (offset: number) => seoulDate(offset).replace(/-/g, "");
+const BIG_VENUE = /KSPO|체조경기장|고척|잠실|올림픽홀|핸드볼|인스파이어|INSPIRE|킨텍스|KINTEX|벡스코|BEXCO|장충|블루스퀘어|평화의\s?전당|세종문화회관|YES24|예스24|티켓링크|라이브\s?아레나|아레나|ARENA|DOME|돔|경기장|체육관|명화라이브홀|무신사\s?개러지|올림픽공원|코엑스|COEX|롯데콘서트홀|광운대|동덕여대|한양대|연세대|고려대|경희대/i;
+const SHOW_HINT = /팬미팅|FAN\s?MEETING|FANMEETING|FANCON|팬콘|WORLD\s?TOUR|월드\s?투어|ASIA\s?TOUR|내한|LIVE\s?IN\s?SEOUL|IN\s?SEOUL|단독\s?콘서트|ENCORE|앙코르|투어/i;
+async function kopisRaw(): Promise<any[]> {
+  const ck = "kopis:raw:v1";
+  const hit = await cacheGet(ck);
+  if (hit?.data && Date.now() - Date.parse(hit.data.updatedAt) < 6 * 3600e3) return hit.data.rows;
+  const rows = new Map<string, any>();
+  // 조회 기간은 한 번에 최대 31일 → 오늘부터 120일을 30일씩
+  for (let w = 0; w < 4; w++) {
+    for (let page = 1; page <= 6; page++) {
+      const qs = new URLSearchParams({ service: CFG.kopisKey, stdate: ymd(w * 30), eddate: ymd(w * 30 + 29), cpage: String(page), rows: "100", shcate: "CCCD" });
+      const r = await fetch(`${KOPIS_BASE}/pblprfr?${qs}`, { signal: AbortSignal.timeout(15000) });
+      const xml = await r.text();
+      if (!r.ok || /<returncode>/i.test(xml) && !/<db>/.test(xml)) { if (page === 1 && w === 0) throw new Error(`kopis ${r.status} ${xml.slice(0, 120)}`); break; }
+      const blocks = xml.split("<db>").slice(1);
+      for (const b of blocks) {
+        const id = xmlVal(b, "mt20id");
+        if (!id || rows.has(id)) continue;
+        rows.set(id, { id, name: xmlVal(b, "prfnm"), from: kDate(xmlVal(b, "prfpdfrom")), to: kDate(xmlVal(b, "prfpdto")), venue: xmlVal(b, "fcltynm"), area: xmlVal(b, "area"), poster: xmlVal(b, "poster").replace(/^http:/, "https:"), state: xmlVal(b, "prfstate") });
+      }
+      if (blocks.length < 100) break;
+    }
+  }
+  const out = [...rows.values()];
+  await cacheSet(ck, { rows: out, updatedAt: new Date().toISOString() });
+  return out;
+}
+/** KOPIS 공연 → AI가 아티스트·종류(K-POP/가수/배우/해외) 분류 */
+async function kopisClassified(): Promise<any[]> {
+  const ck = "kopis:cls:v1";
+  const hit = await cacheGet(ck);
+  if (hit?.data && Date.now() - Date.parse(hit.data.updatedAt) < 6 * 3600e3) return hit.data.rows;
+  const today = seoulDate();
+  const raw = (await kopisRaw()).filter((x) => x.to >= today && !NOT_KCONCERT.test(x.name) && (BIG_VENUE.test(x.venue) || SHOW_HINT.test(x.name))).slice(0, 240);
+  const chunks: any[][] = [];
+  for (let i = 0; i < raw.length; i += 60) chunks.push(raw.slice(i, i + 60));
+  const res = await mapLimit(chunks, 2, async (ch) => {
+    const text = await llm(`아래는 한국에서 열리는 대중음악 공연 목록입니다. 각 공연의 주인공 아티스트와 종류를 판별하세요.
+artistType: K-POP 아이돌 그룹·솔로=kpop, 대중적으로 유명한 한국 가수(발라드·트로트·밴드 포함)=singer, 한국 배우=actor, 한국 방송인·예능인=entertainer, 해외 아티스트 내한(팝·J-POP·해외 밴드·해외 배우)=global, 인디·무명·여러 팀 합동·기타=other.
+artist는 대중이 아는 이름(한국어 표기, 그룹명 우선). title은 공연명을 짧게 정리. 모르면 other.
+JSON 하나만: {"items":[{"i":번호,"artist":"","artistType":"","title":""}]}
+${ch.map((x, i) => `[${i}] ${x.name} @ ${x.venue}`).join("\n")}`, { models: CFG.llmFastModels, maxTokens: 4000, temperature: 0.1 });
+    const o = parseJsonLoose(text);
+    return (Array.isArray(o?.items) ? o.items : []).map((c: any) => {
+      const src = ch[Number(c.i)];
+      if (!src || !c.artist) return null;
+      return {
+        artist: String(c.artist).slice(0, 60), artistType: String(c.artistType || "other").toLowerCase(), title: String(c.title || src.name).slice(0, 100),
+        startDate: src.from, endDate: src.to, venue: src.venue, city: src.area, ticketVendor: "", poster: src.poster, kopisId: src.id,
+        summary: `${src.venue} · ${src.from}${src.to && src.to !== src.from ? " ~ " + src.to : ""}`, searchKeyword: String(c.artist).replace(/\(.*?\)/g, "").trim(),
+        sourceUrl: `https://www.kopis.or.kr/por/db/pblprfr/pblprfrView.do?menuId=MNU_00020&mt20Id=${src.id}`,
+      };
+    }).filter(Boolean);
+  });
+  const rows = res.flatMap((x) => x || []);
+  await cacheSet(ck, { rows, updatedAt: new Date().toISOString() });
+  return rows;
+}
+async function kopisCandidates(cat: string) {
+  const rows = await kopisClassified();
+  return rows.filter((c: any) => validCandidate(cat, c));
+}
+/** 공연 상세: 예매처 링크 */
+async function kopisDetail(it: any) {
+  const r = await fetch(`${KOPIS_BASE}/pblprfr/${enc(it.kopisId)}?service=${enc(CFG.kopisKey)}`, { signal: AbortSignal.timeout(10000) });
+  const xml = await r.text();
+  const rel = xml.split("<relate>").slice(1).map((b) => ({ name: xmlVal(b, "relatenm"), url: xmlVal(b, "relateurl") })).filter((x) => isHttpUrl(x.url));
+  if (rel[0]) { it.link = rel[0].url; it.ticketVendor = rel[0].name; it.tag = [it.tag, rel[0].name].filter(Boolean).join(" · "); }
+}
+
+/* ---------------- 잉키스타일(연예인 착장 아카이브) RSS: 가져올 수 있으면 참고 자료로 ---------------- */
+async function inkistyleSnips(): Promise<Snip[]> {
+  try {
+    const r = await fetch("https://inkistyle.com/feed/", { headers: { "user-agent": "Mozilla/5.0 Korrier" }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const xml = await r.text();
+    const since = Date.now() - 14 * 86400e3;
+    return xml.split("<item>").slice(1, 41).map((b) => {
+      const d = Date.parse(xmlVal(b, "pubDate"));
+      return { t: stripTags(xmlVal(b, "title")), d: stripTags(xmlVal(b, "description")).slice(0, 160), link: xmlVal(b, "link"), kind: "잉키스타일", date: d ? new Date(d + 9 * 3600e3).toISOString().slice(5, 10) : "", ts: d || 0 };
+    }).filter((x) => x.t && (!x.ts || x.ts >= since)).map(({ ts: _ts, ...x }) => x);
+  } catch { return []; }
+}
+
 /** 유행어 검증: 네이버 블로그에서 '단어 + 뜻'으로 찾았을 때 신조어·유행어·밈으로 설명하는 글이 실제로 있어야 통과 */
 const SLANG_EVIDENCE = /신조어|유행어|밈|줄임말|급식체|챌린지|인터넷 용어|유행하는|무슨 뜻|뜻과 유래|짤/;
 async function verifySlang(cands: any[]) {
@@ -606,21 +728,10 @@ async function verifySlang(cands: any[]) {
   return checked.filter(Boolean).sort((a: any, b: any) => b._evidence - a._evidence);
 }
 
-async function buildTrends(cat: string) {
+async function pickCandidates(cat: string, snips: Snip[], hint: string) {
   const spec = SPECS[cat];
   const today = seoulDate();
-  let hint = "";
-  if (cat === "hotplace" || cat === "concert") {
-    const gt = await googleTrendsKR().catch(() => []);
-    if (gt.length) hint = `\n참고: 지금 구글 트렌드 한국 급상승 검색어(검색량): ${gt.join(", ")}\n관련 있는 것이 있으면 우선 반영하세요.`;
-  }
-  let text: string;
-  let sources: { title: string; uri: string }[] = [];
-  let snips: Snip[] = [];
-  if (HAS_NAVER) {
-    snips = cat === "slang" ? await collectSnippets(SEEDS[cat], 30, 90, 30) : await collectSnippets(SEEDS[cat]);
-    if (snips.length < 5) throw new HttpError(502, "not_enough_data");
-    text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 7일 동안 실제로 올라온 네이버 뉴스·블로그 글 목록입니다.${hint}
+  const text = await llm(`오늘은 ${today}(한국 시간)입니다. 아래는 최근 실제로 올라온 네이버 뉴스·블로그 등의 글 목록입니다.${hint}
 이 자료에 나온 내용만 근거로 ${spec.ask}을(를) 최대 50개, 화제성 높은 순서로 골라주세요.${spec.rule || ""}
 - 자료에 없는 것은 절대 만들지 마세요. 모르는 필드는 빈 문자열. 같은 대상은 한 번만.
 - 여러 글에 반복해서 나온 것을 우선하세요. 문장은 짧게.
@@ -630,23 +741,64 @@ async function buildTrends(cat: string) {
 
 자료:
 ${snipText(snips)}`, { maxTokens: 6000 });
-  } else {
-    text = await llm(`${spec.ask}을(를) 웹 검색으로 찾아주세요.${COMMON_RULES(today)}${spec.rule || ""}${hint}\n결과는 {"items":[...]} 형태 JSON 하나만. 각 항목 형식: ${spec.fields}`, { models: [CFG.llmSearchModel], maxTokens: 4000 });
-  }
   const parsed = parseJsonLoose(text);
-  let cands = Array.isArray(parsed) ? parsed : parsed?.items;
-  if (!Array.isArray(cands) || !cands.length) throw new HttpError(502, "ai_parse_failed");
-  // 근거 글 링크를 출처로 연결
-  const used = new Set<number>();
+  const cands = Array.isArray(parsed) ? parsed : parsed?.items;
+  if (!Array.isArray(cands)) throw new HttpError(502, "ai_parse_failed");
+  const sources: { title: string; uri: string }[] = [];
   cands.forEach((c: any) => {
     const refs = (Array.isArray(c?.refs) ? c.refs : []).map(Number).filter((n: number) => snips[n]);
-    refs.forEach((n: number) => used.add(n));
-    if (!c.sourceUrl && refs.length) c.sourceUrl = snips[refs[0]].link;
+    refs.forEach((n: number) => { if (!sources.some((x) => x.uri === snips[n].link)) sources.push({ title: snips[n].t, uri: snips[n].link }); });
+    if (c && !c.sourceUrl && refs.length) c.sourceUrl = snips[refs[0]].link;
   });
-  sources = [...used].slice(0, 12).map((n) => ({ title: snips[n].t, uri: snips[n].link }));
-  cands = cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
-  if (!cands.length) throw new HttpError(502, "no_valid_items");
-  if (cat === "concert") cands = cands.filter((c: any) => !c.endDate || c.endDate >= today);
+  return { cands: cands.filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c)), sources };
+}
+const normName = (x: string) => String(x || "").toLowerCase().replace(/\(.*?\)|[\s·.\-_'"]/g, "");
+
+async function buildTrends(cat: string) {
+  const spec = SPECS[cat];
+  const today = seoulDate();
+  let hint = "";
+  if (cat === "hotplace" || cat === "concert") {
+    const gt = await googleTrendsKR().catch(() => []);
+    if (gt.length) hint = `\n참고: 지금 구글 트렌드 한국 급상승 검색어(검색량): ${gt.join(", ")}\n관련 있는 것이 있으면 우선 반영하세요.`;
+  }
+  let cands: any[] = [];
+  let sources: { title: string; uri: string }[] = [];
+  // 콘서트: 공연예술통합전산망(KOPIS)에 실제 등록된 공연을 먼저
+  const kopis = cat.startsWith("concert") && CFG.kopisKey ? await kopisCandidates(cat).catch((e) => { console.warn("[kopis]", (e as Error).message); return []; }) : [];
+  if (HAS_NAVER) {
+    const opt = BUILD_OPT[cat] || { days: 7, per: 40, max: 70 };
+    let snips = await collectSnippets(SEEDS[cat], opt.per, opt.max, opt.days);
+    if (cat === "fashion-artist") snips = [...(await inkistyleSnips()), ...snips].slice(0, opt.max + 20);
+    if (snips.length >= 5) {
+      const r = await pickCandidates(cat, snips, hint);
+      cands = r.cands; sources = r.sources;
+    }
+    // 10개가 안 되면 다른 검색어로 한 번 더 찾아서 합침
+    if (cands.length + kopis.length < 12 && EXTRA_SEEDS[cat]) {
+      const seenLinks = new Set(snips.map((x) => x.link));
+      const more = (await collectSnippets(EXTRA_SEEDS[cat], opt.per, opt.max, opt.days)).filter((x) => !seenLinks.has(x.link));
+      if (more.length >= 5) {
+        const r2 = await pickCandidates(cat, more, hint).catch(() => ({ cands: [], sources: [] }));
+        cands = cands.concat(r2.cands); sources = sources.concat(r2.sources);
+      }
+    }
+    if (!cands.length && !kopis.length && snips.length < 5) throw new HttpError(502, "not_enough_data");
+  } else {
+    const text = await llm(`${spec.ask}을(를) 웹 검색으로 찾아주세요.${COMMON_RULES(today)}${spec.rule || ""}${hint}\n결과는 {"items":[...]} 형태 JSON 하나만. 각 항목 형식: ${spec.fields}`, { models: [CFG.llmSearchModel], maxTokens: 4000 });
+    const parsed = parseJsonLoose(text);
+    cands = (Array.isArray(parsed) ? parsed : parsed?.items || []).filter((c: any) => c && typeof c === "object" && keyOf(cat, c) && validCandidate(cat, c));
+  }
+  if (cat.startsWith("concert")) {
+    // KOPIS 공연 우선, 같은 아티스트는 한 번만
+    const byArtist = new Set<string>();
+    cands = [...kopis, ...cands].filter((c: any) => {
+      if (c.endDate && c.endDate < today) return false;
+      const k = normName(c.artist);
+      if (!k || byArtist.has(k)) return false;
+      byArtist.add(k); return true;
+    });
+  }
   if (cat === "slang") cands = await verifySlang(cands);
   if (!cands.length) throw new HttpError(502, "no_valid_items");
   const seen = new Set<string>();
@@ -655,6 +807,7 @@ ${snipText(snips)}`, { maxTokens: 6000 });
   items = scored.items.slice(0, CFG.maxItems);
   await mapLimit(items, 6, enrichItem);
   items.forEach((it: any, i: number) => { it.rank = i + 1; });
+  if (kopis.length) scored.basis.push("kopis");
   return { cat, items, sources: sources.slice(0, 12), basis: scored.basis, updatedAt: new Date().toISOString() };
 }
 
@@ -974,8 +1127,9 @@ async function handle(req: Request) {
       return {
         features: {
           trends: !!CFG.llmKey, ranking: HAS_NAVER, places: !!CFG.kakaoRest, x: !!CFG.xBearer,
-          translate: !!(CFG.llmKey || CFG.googleTranslateKey),
+          translate: !!(CFG.llmKey || CFG.googleTranslateKey), kopis: !!CFG.kopisKey,
         },
+        kakaoJsKey: CFG.kakaoJsKey || "",
         trendTtlMin: CFG.trendTtlMin,
       };
     case "trends":
