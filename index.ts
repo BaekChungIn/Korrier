@@ -313,14 +313,19 @@ async function googleTranslate(texts: string[], target: string): Promise<string[
   return (r.data?.translations || []).map((t: any) => t.translatedText);
 }
 async function translateStrings(texts: string[], lang: string): Promise<string[]> {
-  if (lang === "ko") return texts;
+  if (lang === "ko" && !texts.some((x) => !/[가-힣]/.test(x) && /[A-Za-z\u3040-\u30ff\u4e00-\u9fff\u0e00-\u0e7f]/.test(x))) return texts;
+  if (texts.length > 20) {
+    const parts: string[][] = [];
+    for (let i = 0; i < texts.length; i += 20) parts.push(texts.slice(i, i + 20));
+    return (await mapLimit(parts, 3, (p) => translateStrings(p, lang))).flatMap((x, i) => x || parts[i]);
+  }
   const key = `str:${lang}:${hashId(JSON.stringify(texts))}`;
   const hit = await cacheGet(key);
   if (hit?.data) return hit.data;
   let out: any;
   if (CFG.googleTranslateKey) out = await googleTranslate(texts, lang);
   else {
-    const text = await llm(`Translate each Korean string in "texts" into ${LANG_NAMES[lang]}. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Return JSON {"texts":[...]} with the same number of strings in the same order.\n${JSON.stringify({ texts })}`, { models: CFG.llmFastModels, temperature: 0.1, maxTokens: 2000 });
+    const text = await llm(`Translate each string in "texts" (usually Korean, may be another language) into ${LANG_NAMES[lang]}. If a string is already in ${LANG_NAMES[lang]}, keep it. Keep proper nouns natural for travelers (localized name if widely used, otherwise romanize). Keep line breaks. Return JSON {"texts":[...]} with the same number of strings in the same order.\n${JSON.stringify({ texts })}`, { models: CFG.llmFastModels, temperature: 0.1, maxTokens: Math.min(8000, 800 + texts.join("").length * 3) });
     const o = parseJsonLoose(text);
     out = Array.isArray(o) ? o : o?.texts;
   }
@@ -774,6 +779,139 @@ ${basisText} ${LANG_NAMES[lang]}로 작성하고, 다음 JSON 객체 하나만 �
   return out;
 }
 
+
+/* ---------------- MY스타: 검색 · 사진 · 소식/일정 ---------------- */
+const httpsOnly = (u: string) => (u || "").replace(/^http:\/\//, "https://");
+const STAR_WORD = /가수|아이돌|그룹|보이그룹|걸그룹|배우|래퍼|싱어송라이터|멤버|연예인|방송인|뮤지션|보컬|댄서|솔로|밴드|탤런트|MC|모델|프로듀서|작곡가|singer|idol|actor|actress|rapper|band/i;
+async function starSearch(q: string) {
+  const ck = `starq:${hashId(q.toLowerCase())}`;
+  const hit = await cacheGet(ck);
+  if (hit?.data && Date.now() - Date.parse(hit.data.updatedAt) < 24 * 3600e3) return hit.data;
+  let list: any[] = [];
+  let encycOk = true;
+  try {
+    const r = await naverSearch("encyc", q, { display: 20 });
+    const all = (r.items || []).map((x: any) => {
+      const full = stripTags(x.title);
+      const m = full.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
+      return { name: (m ? m[1] : full).trim().slice(0, 40), sub: m ? m[2].trim() : "", desc: stripTags(x.description).slice(0, 160), photo: httpsOnly(x.thumbnail || ""), link: x.link || "" };
+    }).filter((x: any) => x.name);
+    const people = all.filter((x: any) => STAR_WORD.test(x.sub + " " + x.desc));
+    list = (people.length ? people : all).slice(0, 10);
+  } catch (e) {
+    encycOk = false;
+    console.warn("[star encyc]", (e as Error).message);
+  }
+  // 백과사전 결과가 없거나 API를 아직 추가하지 않았으면: 입력한 이름 그대로 후보로
+  if (!list.some((x) => x.name.replace(/\s/g, "").toLowerCase() === q.replace(/\s/g, "").toLowerCase())) {
+    const news = await naverSearch("news", q, { display: 5, sort: "sim" }).catch(() => ({ items: [] }));
+    if ((news.items || []).length || !list.length) {
+      list.unshift({ name: q.slice(0, 40), sub: "", desc: stripTags(news.items?.[0]?.title || "").slice(0, 120), photo: "", link: "" });
+    }
+  }
+  // 사진이 없는 후보는 네이버 이미지로 채움
+  await mapLimit(list, 4, async (x) => {
+    if (x.photo) return;
+    const img = await naverSearch("image", `${x.name} ${x.sub || "프로필"}`.trim(), { display: 1, sort: "sim" }).catch(() => null);
+    const it = img?.items?.[0];
+    if (it) x.photo = httpsOnly(it.thumbnail || it.link);
+  });
+  const seen = new Set<string>();
+  list = list.filter((x) => { const k = x.name + "|" + x.sub; if (seen.has(k)) return false; seen.add(k); return true; });
+  const out = { results: list.slice(0, 10), encyc: encycOk, updatedAt: new Date().toISOString() };
+  await cacheSet(ck, out);
+  return out;
+}
+async function starPhotos(name: string) {
+  const qs = [`${name}`, `${name} 프로필 사진`];
+  const lists = await Promise.all(qs.map((q) => naverSearch("image", q, { display: 15, sort: "sim" }).catch(() => ({ items: [] }))));
+  const seen = new Set<string>();
+  const photos: { thumb: string; full: string }[] = [];
+  for (const it of lists.flatMap((l: any) => l.items || [])) {
+    const thumb = httpsOnly(it.thumbnail || "");
+    if (!thumb || seen.has(thumb)) continue;
+    seen.add(thumb);
+    photos.push({ thumb, full: httpsOnly(it.link || thumb) });
+  }
+  return { photos: photos.slice(0, 24) };
+}
+
+const FEED_TTL = 3 * 3600e3;
+async function buildStarFeed(name: string) {
+  const since = Date.now() - 45 * 86400e3;
+  const [newsR, photoR, ...schedR] = await Promise.all([
+    naverSearch("news", name, { display: 40, sort: "date" }).catch(() => ({ items: [] })),
+    naverSearch("image", name, { display: 18, sort: "date" }).catch(() => ({ items: [] })),
+    ...["콘서트", "컴백", "팬미팅", "출연", "발매", "일정"].map((w) => naverSearch("news", `${name} ${w}`, { display: 20, sort: "date" }).catch(() => ({ items: [] }))),
+  ]);
+  const toNews = (x: any) => ({ title: stripTags(x.title), desc: stripTags(x.description).slice(0, 140), link: x.originallink || x.link, date: new Date(Date.parse(x.pubDate) + 9 * 3600e3).toISOString().slice(0, 10) });
+  const seen = new Set<string>();
+  const uniq = (arr: any[]) => arr.filter((x) => { const k = x.title.replace(/\s+/g, "").slice(0, 28); if (seen.has(k)) return false; seen.add(k); return true; });
+  const news = uniq((newsR.items || []).map(toNews)).slice(0, 20);
+  const schedSnips = uniq(schedR.flatMap((r: any) => r.items || []).filter((x: any) => Date.parse(x.pubDate) >= since).map(toNews)).slice(0, 60);
+  const photos = (photoR.items || []).map((x: any) => ({ thumb: httpsOnly(x.thumbnail || ""), full: httpsOnly(x.link || "") })).filter((x: any) => x.thumb).slice(0, 12);
+
+  let schedule: any[] = [];
+  const pool = [...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 70);
+  if (pool.length && CFG.llmKey) {
+    const today = seoulDate();
+    const prompt = `오늘은 ${today}입니다. 아래는 "${name}" 관련 최근 네이버 뉴스입니다.
+여기서 "${name}" 본인(또는 그룹)이 참여하는, 오늘(${today}) 이후에 열리거나 공개되는 일정만 뽑으세요.
+종류: concert(콘서트/투어), fanmeeting(팬미팅/팬사인회), comeback(컴백/앨범·음원 발매), broadcast(방송·예능·드라마 출연/방영), event(시상식/페스티벌/행사), ticket(티켓 오픈/예매).
+규칙: 자료에 날짜가 명확한 것만. 이미 지난 일정, 추측, "${name}"이(가) 아닌 다른 사람의 일정은 제외. 같은 일정은 하나로.
+JSON 객체 하나만 출력: {"schedule":[{"date":"YYYY-MM-DD","endDate":"YYYY-MM-DD 또는 빈 문자열","time":"HH:MM 또는 빈 문자열","type":"위 종류 중 하나","title":"짧은 일정 이름(한국어)","place":"장소 또는 빈 문자열","ref":자료 번호}]}
+자료:
+${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 90)}`).join("\n")}`;
+    try {
+      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 2500, temperature: 0.1 }));
+      const arr = Array.isArray(obj?.schedule) ? obj.schedule : [];
+      const keys = new Set<string>();
+      schedule = arr.filter((x: any) => /^\d{4}-\d{2}-\d{2}$/.test(x?.date) && (x.endDate && /^\d{4}-\d{2}-\d{2}$/.test(x.endDate) ? x.endDate : x.date) >= today && x.title)
+        .map((x: any) => ({
+          date: x.date, endDate: /^\d{4}-\d{2}-\d{2}$/.test(x.endDate || "") ? x.endDate : "", time: /^\d{1,2}:\d{2}$/.test(x.time || "") ? x.time : "",
+          type: ["concert", "fanmeeting", "comeback", "broadcast", "event", "ticket"].includes(x.type) ? x.type : "event",
+          title: String(x.title).slice(0, 80), place: String(x.place || "").slice(0, 60),
+          link: pool[Number(x.ref)]?.link || "",
+        }))
+        .filter((x: any) => { const k = x.date + x.title.replace(/\s/g, "").slice(0, 10); if (keys.has(k)) return false; keys.add(k); return true; })
+        .sort((a: any, b: any) => a.date.localeCompare(b.date)).slice(0, 20);
+    } catch (e) { console.warn("[star schedule]", (e as Error).message); }
+  }
+  return { name, news, photos, schedule, updatedAt: new Date().toISOString() };
+}
+async function getStarFeed(name: string, lang: string, force: boolean) {
+  const key = `star:${hashId(name)}`;
+  let base = (await cacheGet(key))?.data || null;
+  const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
+  let refreshing = false;
+  const build = async () => {
+    if (!(await tryLock(key))) return false;
+    try { await cacheSet(key, await buildStarFeed(name)); return true; } catch (e) { await unlock(key); throw e; }
+  };
+  if (!base) {
+    if (!(await build())) { for (let i = 0; i < 30 && !base; i++) { await sleep(2000); base = (await cacheGet(key))?.data || null; } }
+    base = base || (await cacheGet(key))?.data;
+    if (!base) throw new HttpError(504, "trend_timeout");
+  } else if (age > FEED_TTL || (force && age > 15 * 60e3)) {
+    refreshing = true;
+    background(build());
+  }
+  let out = base;
+  if (lang !== "ko") {
+    const texts = [...base.news.map((x: any) => x.title), ...base.schedule.map((x: any) => x.title), ...base.schedule.map((x: any) => x.place || "-")];
+    try {
+      const tr = await translateStrings(texts, lang);
+      const n = base.news.length, m = base.schedule.length;
+      out = {
+        ...base,
+        news: base.news.map((x: any, i: number) => ({ ...x, title: tr[i] || x.title, desc: "" })),
+        schedule: base.schedule.map((x: any, i: number) => ({ ...x, title: tr[n + i] || x.title, place: x.place ? (tr[n + m + i] || x.place) : "" })),
+      };
+    } catch { /* 원문 */ }
+  }
+  return { ...out, refreshing };
+}
+
 /* ---------------- 요청 처리 ---------------- */
 const CORS = {
   "Access-Control-Allow-Origin": CFG.allowedOrigin,
@@ -809,7 +947,29 @@ async function handle(req: Request) {
       const texts = body.texts;
       if (!Array.isArray(texts) || !texts.length || texts.length > 60) throw new HttpError(400, "texts_required");
       const lang = langOf(body.lang);
-      return { texts: await translateStrings(texts.map((t: unknown) => String(t).slice(0, 300)), lang) };
+      const long = body.long === true;
+      if (long && texts.length > 3) throw new HttpError(400, "texts_required");
+      if (long) { const user = await getUser(req); if (!user) throw new HttpError(401, "login_required"); await checkUsage(user.id, "tr", 60); }
+      return { texts: await translateStrings(texts.map((t: unknown) => String(t).slice(0, long ? 3000 : 300)), lang) };
+    }
+    case "star_search": {
+      const q = String(body.q || "").trim().slice(0, 40);
+      if (!q) return { results: [] };
+      if (!HAS_NAVER) throw new HttpError(503, "naver_missing");
+      return starSearch(q);
+    }
+    case "star_photos": {
+      const name = String(body.name || "").trim().slice(0, 40);
+      if (!name || !HAS_NAVER) return { photos: [] };
+      return starPhotos(name);
+    }
+    case "star_feed": {
+      const user = await getUser(req);
+      if (!user) throw new HttpError(401, "login_required");
+      const name = String(body.name || "").trim().slice(0, 40);
+      if (!name) throw new HttpError(400, "name_required");
+      if (!HAS_NAVER) throw new HttpError(503, "naver_missing");
+      return getStarFeed(name, langOf(body.lang), body.force === true);
     }
     case "places": {
       const q = String(body.q || "").trim();

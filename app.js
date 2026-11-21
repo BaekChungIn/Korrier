@@ -45,6 +45,11 @@ const S = {
   hotSel: null,
   detail: null,
   authMode: 'login',
+  stars: [],
+  starIdx: 0,
+  starSeg: 'news',
+  feeds: {},
+  community: { cat: 'all', sort: 'new', posts: [], offset: 0, done: false, loading: false },
 };
 if (!LANGS.some((l) => l.code === S.lang)) S.lang = 'ko';
 
@@ -111,7 +116,7 @@ async function fn(action, payload = {}) {
   return out;
 }
 /** Supabase DB 결과 처리 */
-function must({ data, error }) { if (error) { const e = mkErr(error.code || 'db', 500); e.message = error.message; throw e; } return data; }
+function must({ data, error }) { if (error) { const m = String(error.message || ''); const e = mkErr(I18N['err_' + m] ? m : (error.code || 'db'), 500); e.message = m; throw e; } return data; }
 function errText(e) {
   if (e && e.code && I18N['err_' + e.code]) return t('err_' + e.code);
   if (e && e.status === 503) return t('setupNeeded');
@@ -132,6 +137,9 @@ const toastErr = (e) => toast(errText(e), 'alert');
 
 /* ---------------- 모달 공통 ---------------- */
 const openModal = (id) => $('#' + id).classList.add('open');
+function showScreen(id) { const el = $('#' + id); el.classList.remove('hidden'); el.classList.add('flex'); }
+function hideScreen(id) { const el = $('#' + id); el.classList.add('hidden'); el.classList.remove('flex'); }
+document.addEventListener('click', (e) => { const c = e.target.closest('[data-screen-close]'); if (c) hideScreen(c.dataset.screenClose); });
 const closeModal = (id) => $('#' + id).classList.remove('open');
 document.addEventListener('click', (e) => {
   const c = e.target.closest('[data-close]');
@@ -141,12 +149,14 @@ document.addEventListener('click', (e) => {
 
 /* ---------------- 탭 / 카테고리 ---------------- */
 const TABS = [
-  { key: 'map', icon: 'map', color: '#0071E3' },
+  { key: 'star', icon: 'heart', color: '#E11D74' },
   { key: 'hotplace', icon: 'pin', color: '#F59E0B' },
   { key: 'beauty', icon: 'sparkles', color: '#E11D48' },
   { key: 'fashion', icon: 'bag', color: '#4F46E5' },
   { key: 'concert', icon: 'ticket', color: '#2563EB' },
   { key: 'slang', icon: 'chat', color: '#34A853' },
+  { key: 'map', icon: 'map', color: '#0071E3' },
+  { key: 'community', icon: 'users', color: '#0F766E' },
 ];
 const CAT_STYLE = {
   hotplace: { bg: '#FFF6ED', fg: '#F97316' },
@@ -166,8 +176,8 @@ function renderTabBar() {
   $('#tabBar').innerHTML = TABS.map((tb) => {
     const on = tb.key === S.tab;
     return `<button data-tab="${tb.key}" class="flex-1 flex flex-col items-center justify-center gap-0.5 min-w-0 transition ${on ? 'font-semibold' : 'text-[#8E8E93] font-normal hover:text-[#1D1D1F]'}" style="${on ? `color:${tb.color}` : ''}">
-      ${icon(tb.icon, 'w-[22px] h-[22px]', on ? 2 : 1.7)}
-      <span class="text-[10.5px] tracking-tight truncate max-w-full px-0.5">${esc(t('nav_' + tb.key))}</span>
+      ${icon(tb.icon, 'w-[21px] h-[21px]', on ? 2.1 : 1.7)}
+      <span class="text-[10px] tracking-tighter truncate max-w-full px-0.5">${esc(t(I18N['navs_' + tb.key] ? 'navs_' + tb.key : 'nav_' + tb.key))}</span>
     </button>`;
   }).join('');
 }
@@ -176,16 +186,35 @@ $('#tabBar').addEventListener('click', (e) => {
   if (b) selectTab(b.dataset.tab);
 });
 
+function hideMainViews() {
+  ['#listArea', '#mapView', '#fashionSubTabs', '#metaLine'].forEach((q) => $(q).classList.add('hidden'));
+}
 function selectTab(key) {
   S.tab = key;
   renderTabBar();
   updateCategoryTitle();
   $('#contentContainer').scrollTop = 0;
-  if (key === 'map') { renderMapView(); }
+  const social = key === 'star' || key === 'community';
+  $('#catCard').classList.toggle('hidden', social);
+  $('#starView').classList.toggle('hidden', key !== 'star');
+  $('#communityView').classList.toggle('hidden', key !== 'community');
+  $('#btnWrite').classList.toggle('hidden', key !== 'community');
+  $('#btnWrite').classList.toggle('flex', key === 'community');
+  if (key === 'map') renderMapView();
+  else if (key === 'star') { hideMainViews(); renderStarView(); }
+  else if (key === 'community') { hideMainViews(); renderCommunity(true); }
+  else { renderList(); loadTrends(false); }
+}
+/** 언어 변경 등으로 지금 화면 다시 그리기 */
+function rerenderCurrent() {
+  if (S.tab === 'map') renderMapView();
+  else if (S.tab === 'star') renderStarView();
+  else if (S.tab === 'community') renderCommunity(false);
   else { renderList(); loadTrends(false); }
 }
 function updateCategoryTitle() {
   const k = S.tab === 'map' ? 'title_map' : S.tab === 'hotplace' ? 'title_hotplace' : 'nav_' + S.tab;
+  if (S.tab === 'star' || S.tab === 'community') return;
   $('#categoryTitle').textContent = t(k);
   $('#liveBadge').classList.toggle('hidden', S.tab === 'map');
 }
@@ -207,7 +236,7 @@ $('#platAbly').onclick = () => { S.platform = 'ably'; renderList(); loadTrends(f
 
 /* ---------------- 언어 / 자동 새로고침 메뉴 ---------------- */
 function renderLangMenu() {
-  $('#currentLangText').textContent = langInfo().label;
+  $('#currentLangText').textContent = S.lang.toUpperCase();
   $('#langMenu').innerHTML = LANGS.map((l) => `
     <button data-lang="${l.code}" class="w-full text-left px-4 py-2.5 hover:bg-black/[0.04] flex items-center gap-2">
       <span class="w-4 text-[#1D1D1F]">${l.code === S.lang ? icon('check', 'w-4 h-4', 2.2) : ''}</span><span>${esc(l.label)}</span>
@@ -236,7 +265,7 @@ function changeLanguage(code) {
   $('#langMenu').classList.add('hidden');
   refreshAllText();
   if (S.user && sb) sb.from('korrier_profiles').update({ lang: code }).eq('id', S.user.id).then(() => {});
-  if (S.tab === 'map') renderMapView(); else { renderList(); loadTrends(false); }
+  rerenderCurrent();
   prefetchAll();
   if (S.detail) renderDetail();
   toast(t('toast_langChanged'), 'globe');
@@ -248,7 +277,7 @@ function refreshAllText() {
   renderTabBar();
   updateCategoryTitle();
   renderProfileButton();
-  renderAuthModal();
+  if (!$('#authScreen').classList.contains('hidden')) setAuthView(S.authView);
   updateClock();
 }
 
@@ -258,7 +287,7 @@ function setAuto(min, notify) {
   clearInterval(S.autoTimer);
   S.autoTimer = null;
   if (min > 0) S.autoTimer = setInterval(async () => {
-    if (S.tab === 'map') return;
+    if (['map', 'star', 'community'].includes(S.tab)) return;
     const cat = catKey(); const lang = S.lang;
     const old = S.trends[`${cat}|${lang}`];
     try {
@@ -333,6 +362,7 @@ async function prefetchAll() {
 }
 
 async function loadTrends(force, silent) {
+  if (S.tab === 'star' || S.tab === 'community') return;
   const cat = catKey();
   const lang = S.lang;
   const key = `${cat}|${lang}`;
@@ -665,7 +695,7 @@ async function fetchOpinion() {
     d.opinion = await fn('opinion', { keyword: it.keyword || it.original || it.title, title: it.original || it.title, lang: S.lang });
   } catch (e) {
     d.opError = e;
-    if (e.status === 401) { d.opLoading = false; d.opError = null; $('#aiBox').innerHTML = ''; toast(t('loginForAi'), 'lock'); openAuth('login'); return; }
+    if (e.status === 401) { d.opLoading = false; d.opError = null; $('#aiBox').innerHTML = ''; toast(t('loginForAi'), 'lock'); openAuth('landing'); return; }
   }
   d.opLoading = false;
   if (S.detail === d) { $('#aiBox').innerHTML = opinionHtml(); $('#aiBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
@@ -700,37 +730,71 @@ function avatarHtml(user, size) {
   return icon('user', size);
 }
 function renderProfileButton() {
-  $('#navAvatar').innerHTML = avatarHtml(S.user, 'w-4 h-4');
-  $('#navProfileName').textContent = S.user ? S.user.nickname : t('login');
+  if (typeof renderUserChrome === 'function') renderUserChrome();
 }
-$('#btnProfile').onclick = () => { if (S.user) openProfile(); else openAuth('login'); };
 
-function openAuth(mode) {
+/* ---------- 로그인 · 회원가입 (짬타이거 방식: 이메일 인증코드) ---------- */
+S.authView = 'landing';
+function openAuth(view = 'landing') {
   if (!sb) { toast(t('setupNeeded'), 'alert'); return; }
-  S.authMode = mode;
-  hideAuthMsgs();
-  renderAuthModal();
-  openModal('authModal');
-  setTimeout(() => (mode === 'recover' ? $('#authPassword') : $('#authEmail')).focus(), 50);
+  showScreen('authScreen');
+  setAuthView(view === 'recover' ? 'login' : view);
 }
+function closeAuth() { hideScreen('authScreen'); }
 function hideAuthMsgs() { $('#authError').classList.add('hidden'); $('#authInfo').classList.add('hidden'); }
-function showAuthMsg(id, ic, text) { const el = $(id); el.innerHTML = icon(ic, 'w-3.5 h-3.5 mt-[1px] shrink-0') + `<span>${esc(text)}</span>`; el.classList.remove('hidden'); }
-function renderAuthModal() {
-  const m = S.authMode;
-  $('#authTitle').textContent = t({ login: 'authLoginTitle', signup: 'authSignupTitle', forgot: 'forgotTitle', recover: 'recoverTitle' }[m]);
-  $('#authSubmit').textContent = t({ login: 'login', signup: 'signup', forgot: 'sendResetLink', recover: 'save' }[m]);
-  $('#authSwitch').textContent = m === 'login' ? t('noAccount') : m === 'signup' ? t('haveAccount') : t('backToLogin');
-  $('#authSwitch').classList.toggle('hidden', m === 'recover');
-  $('#authForgot').classList.toggle('hidden', m !== 'login');
-  $('#emailWrap').classList.toggle('hidden', m === 'recover');
-  $('#pwWrap').classList.toggle('hidden', m === 'forgot');
-  $('#pwLabel').textContent = m === 'recover' ? t('newPw') : t('password');
-  $('#nickWrap').classList.toggle('hidden', m !== 'signup');
-  $('#pwHintText').classList.toggle('hidden', !(m === 'signup' || m === 'recover'));
-  $('#authPassword').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+function showAuthMsg(id, ic, text) { const el = $(id); el.innerHTML = icon(ic, 'w-4 h-4 mt-[1px] shrink-0') + `<span>${esc(text)}</span>`; el.classList.remove('hidden'); }
+const AUTH_TEXT = {
+  login: ['login', 'loginSub', 'emailLogin'],
+  signup: ['signup', 'signupSub', 'sendCode'],
+  verify: ['verifyTitle', 'verifySub', 'verify'],
+  forgot: ['forgotTitle', 'resetSub', 'sendCode'],
+  reset: ['recoverTitle', 'verifySub', 'save'],
+};
+function setAuthView(v) {
+  S.authView = v;
+  const landing = v === 'landing';
+  $('#authLanding').classList.toggle('hidden', !landing); $('#authLanding').classList.toggle('flex', landing);
+  $('#authForms').classList.toggle('hidden', landing); $('#authForms').classList.toggle('flex', !landing);
+  hideAuthMsgs();
+  if (landing) return;
+  const [ti, sub, btn] = AUTH_TEXT[v];
+  $('#authTitle').textContent = t(ti);
+  $('#authSubText').textContent = t(sub, { email: S.authEmail || '' });
+  $('#authSubmit').textContent = t(btn);
+  const show = (id, on) => $(id).classList.toggle('hidden', !on);
+  show('#authNickname', v === 'signup');
+  show('#authEmail', v === 'login' || v === 'signup' || v === 'forgot');
+  show('#authCode', v === 'verify' || v === 'reset');
+  show('#authPassword', v === 'login' || v === 'signup' || v === 'reset');
+  $('#authPassword').placeholder = v === 'login' ? t('pwPh') : `${t(v === 'reset' ? 'newPw' : 'pwPh')} (${t('pwHint')})`;
+  $('#authPassword').autocomplete = v === 'login' ? 'current-password' : 'new-password';
+  show('#authSwitchWrap', v === 'login' || v === 'signup');
+  $('#authSwitchQ').textContent = v === 'login' ? t('noAccountQ') : '';
+  $('#authSwitch').textContent = v === 'login' ? t('newAccount') : t('haveAccount');
+  show('#authForgot', v === 'login');
+  show('#authResend', v === 'verify' || v === 'reset');
+  if (v === 'verify' || v === 'reset') $('#authCode').value = '';
+  setTimeout(() => { const f = v === 'verify' || v === 'reset' ? '#authCode' : v === 'signup' ? '#authNickname' : '#authEmail'; $(f).focus(); }, 60);
 }
-$('#authSwitch').onclick = () => { S.authMode = S.authMode === 'login' ? 'signup' : 'login'; hideAuthMsgs(); renderAuthModal(); };
-$('#authForgot').onclick = () => { S.authMode = 'forgot'; hideAuthMsgs(); renderAuthModal(); };
+document.addEventListener('click', (e) => { const g = e.target.closest('[data-auth-go]'); if (g) setAuthView(g.dataset.authGo); });
+$('#authBack').onclick = () => setAuthView({ login: 'landing', signup: 'login', verify: 'signup', forgot: 'login', reset: 'forgot' }[S.authView] || 'landing');
+$('#authSwitch').onclick = () => setAuthView(S.authView === 'login' ? 'signup' : 'login');
+$('#authForgot').onclick = () => setAuthView('forgot');
+$('#btnBrowse').onclick = () => { localStorage.setItem('korrier_browse', '1'); closeAuth(); };
+$('#btnGoogle').onclick = async () => {
+  hideAuthMsgs();
+  const { error } = await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: appUrl() } });
+  if (error) { setAuthView('login'); showAuthMsg('#authError', 'alert', errText(authFail(error))); }
+};
+$('#authResend').onclick = async () => {
+  try {
+    const r = S.authView === 'verify'
+      ? await sb.auth.resend({ type: 'signup', email: S.authEmail })
+      : await sb.auth.resetPasswordForEmail(S.authEmail);
+    if (r.error) throw authFail(r.error);
+    showAuthMsg('#authInfo', 'mail', t('codeSent'));
+  } catch (e) { showAuthMsg('#authError', 'alert', errText(e)); }
+};
 
 /** Supabase Auth 오류 → 번역 키 */
 function authCode(e) {
@@ -743,6 +807,8 @@ function authCode(e) {
   if (c === 'email_not_confirmed' || m.includes('not confirmed')) return 'email_not_confirmed';
   if (c === 'same_password') return 'same_password';
   if (c.startsWith('over_') || m.includes('rate limit')) return 'too_many_requests';
+  if (c === 'otp_expired' || c === 'otp_disabled' || m.includes('token has expired') || m.includes('invalid otp') || m.includes('otp')) return 'invalid_code';
+  if (c === 'provider_disabled' || m.includes('provider is not enabled') || m.includes('unsupported provider')) return 'provider_disabled';
   if (c === 'email_address_invalid' || c === 'validation_failed' || m.includes('invalid email') || m.includes('validate email')) return 'invalid_email';
   return 'generic';
 }
@@ -753,40 +819,64 @@ $('#authForm').onsubmit = async (e) => {
   const btn = $('#authSubmit');
   btn.disabled = true;
   hideAuthMsgs();
-  const m = S.authMode;
+  const v = S.authView;
   const email = $('#authEmail').value.trim();
   const pw = $('#authPassword').value;
+  const code = $('#authCode').value.replace(/\D/g, '');
+  const okEmail = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
   try {
-    if (m !== 'recover' && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) throw mkErr('invalid_email');
-    if ((m === 'signup' || m === 'recover') && pw.length < 8) throw mkErr('weak_password');
-    if (m === 'signup') {
+    if (v === 'login') {
+      if (!okEmail) throw mkErr('invalid_email');
+      const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+      if (error) {
+        if (authCode(error) === 'email_not_confirmed') {
+          S.authEmail = email;
+          await sb.auth.resend({ type: 'signup', email });
+          setAuthView('verify');
+          showAuthMsg('#authInfo', 'mail', t('codeSent'));
+          return;
+        }
+        throw authFail(error);
+      }
+      S.welcomePending = true;
+      closeAuth();
+    } else if (v === 'signup') {
       const nickname = $('#authNickname').value.trim().slice(0, 20);
       if (!nickname) throw mkErr('nickname_required');
+      if (!okEmail) throw mkErr('invalid_email');
+      if (pw.length < 8) throw mkErr('weak_password');
       const { data, error } = await sb.auth.signUp({ email, password: pw, options: { data: { nickname, lang: S.lang }, emailRedirectTo: appUrl() } });
       if (error) throw authFail(error);
       if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) throw mkErr('email_taken');
-      if (!data.session) {
-        S.authMode = 'login'; renderAuthModal();
-        showAuthMsg('#authInfo', 'mail', t('confirmEmailSent'));
-        return;
-      }
-      S.welcomePending = true;
-    } else if (m === 'login') {
-      const { error } = await sb.auth.signInWithPassword({ email, password: pw });
+      if (data.session) { S.welcomePending = true; closeAuth(); return; }
+      S.authEmail = email;
+      setAuthView('verify');
+      showAuthMsg('#authInfo', 'mail', t('codeSent'));
+    } else if (v === 'verify') {
+      if (code.length < 6) throw mkErr('invalid_code');
+      let { error } = await sb.auth.verifyOtp({ email: S.authEmail, token: code, type: 'email' });
+      if (error) ({ error } = await sb.auth.verifyOtp({ email: S.authEmail, token: code, type: 'signup' }));
       if (error) throw authFail(error);
       S.welcomePending = true;
-    } else if (m === 'forgot') {
+      closeAuth();
+    } else if (v === 'forgot') {
+      if (!okEmail) throw mkErr('invalid_email');
       const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
       if (error) throw authFail(error);
-      showAuthMsg('#authInfo', 'mail', t('resetSent'));
-      return;
-    } else if (m === 'recover') {
-      const { error } = await sb.auth.updateUser({ password: pw });
-      if (error) throw authFail(error);
+      S.authEmail = email;
+      setAuthView('reset');
+      showAuthMsg('#authInfo', 'mail', t('codeSent'));
+    } else if (v === 'reset') {
+      if (code.length < 6) throw mkErr('invalid_code');
+      if (pw.length < 8) throw mkErr('weak_password');
+      const r1 = await sb.auth.verifyOtp({ email: S.authEmail, token: code, type: 'recovery' });
+      if (r1.error) throw authFail(r1.error);
+      const r2 = await sb.auth.updateUser({ password: pw });
+      if (r2.error) throw authFail(r2.error);
       toast(t('toast_pwChanged'), 'lock');
+      closeAuth();
     }
     $('#authPassword').value = '';
-    closeModal('authModal');
   } catch (err) {
     showAuthMsg('#authError', 'alert', errText(err));
   } finally { btn.disabled = false; }
@@ -810,7 +900,7 @@ async function handleSession(session) {
       const nickname = String(meta.nickname || (u.email || '').split('@')[0] || 'Traveler').slice(0, 20);
       prof = must(await sb.from('korrier_profiles').upsert({ id: u.id, nickname, lang: LANGS.some((l) => l.code === meta.lang) ? meta.lang : S.lang }).select().single());
     }
-    await onLogin({ id: u.id, email: u.email, nickname: prof.nickname, photo: prof.photo || '', lang: prof.lang });
+    await onLogin({ id: u.id, email: u.email, nickname: prof.nickname, photo: prof.photo || '', lang: prof.lang, friend_code: prof.friend_code || '' });
     if (S.welcomePending) { S.welcomePending = false; toast(t('toast_welcome', { name: prof.nickname }), 'user'); }
   } catch (e) {
     sessionUid = null;
@@ -819,6 +909,7 @@ async function handleSession(session) {
 }
 function clearUser() {
   S.user = null; S.savedTrips = [];
+  if (typeof onLogoutSocial === 'function') onLogoutSocial();
   if (S.trip && S.trip.id && !S.tripReadOnly) S.trip = null;
   renderProfileButton();
   if (S.tab === 'map') renderMapView();
@@ -830,8 +921,10 @@ async function onLogin(user) {
   renderProfileButton();
   // 로그인 전 기기에 저장한 일정을 계정으로 이전
   if (S.trip && !S.trip.id && !S.tripReadOnly) await saveTripNow(false);
-  await refreshSavedTrips();
+  await Promise.all([refreshSavedTrips(), typeof onLoginSocial === 'function' ? onLoginSocial() : null]);
+  renderProfileButton();
   if (S.tab === 'map') renderMapView();
+  if (S.tab === 'star') renderStarView();
 }
 
 function openProfile() {
@@ -902,6 +995,7 @@ $('#btnLogout').onclick = async () => {
   sessionUid = null;
   clearUser();
   closeModal('profileModal');
+  hideScreen('settingsScreen');
   toast(t('toast_loggedOut'), 'logout');
 };
 let delArmed = false;
@@ -910,13 +1004,13 @@ $('#btnDeleteAccount').onclick = async () => {
   if (!delArmed) { delArmed = true; $('#btnDeleteAccount').textContent = t('confirmAgain'); setTimeout(resetDeleteBtn, 4000); return; }
   try {
     // 같은 Supabase 계정을 쓰는 다른 앱 계정은 건드리지 않고 Korrier 데이터만 삭제
-    must(await sb.from('korrier_trips').delete().eq('user_id', S.user.id));
-    must(await sb.from('korrier_profiles').delete().eq('id', S.user.id));
+    must(await sb.rpc('korrier_delete_my_data'));
     await sb.auth.signOut().catch(() => {});
     sessionUid = null;
     S.trip = null;
     clearUser();
     closeModal('profileModal');
+    hideScreen('settingsScreen');
     toast(t('toast_accountDeleted'), 'check');
   } catch (e) { toastErr(e); }
 };
@@ -998,7 +1092,7 @@ function saveTripNow(explicit) {
     if (!S.trip || S.tripReadOnly) return;
     if (!S.user) {
       localStorage.setItem(LS.trip, JSON.stringify(S.trip));
-      if (explicit) { toast(t('toast_needLogin'), 'info'); openAuth('login'); }
+      if (explicit) { toast(t('toast_needLogin'), 'info'); openAuth('landing'); }
       return;
     }
     try {
@@ -1163,7 +1257,7 @@ $('#btnChangeTrip').onclick = () => openWizard(S.trip.region, 1, true);
 $('#btnAddPlace').onclick = openPlaceModal;
 $('#btnCenterMap').onclick = () => drawMap(true);
 $('#btnShareTrip').onclick = async () => {
-  if (!S.user) { toast(t('toast_needLogin'), 'info'); openAuth('login'); return; }
+  if (!S.user) { toast(t('toast_needLogin'), 'info'); openAuth('landing'); return; }
   S.trip.shared = true;
   await saveTripNow(false);
   if (!S.trip.id) return;
@@ -1176,7 +1270,7 @@ $('#btnShareTrip').onclick = async () => {
   }
 };
 async function copySharedTrip() {
-  if (!S.user) { toast(t('toast_needLogin'), 'info'); openAuth('login'); return; }
+  if (!S.user) { toast(t('toast_needLogin'), 'info'); openAuth('landing'); return; }
   const copy = { ...JSON.parse(JSON.stringify(S.trip)), id: undefined, shared: false };
   delete copy.id;
   S.trip = copy; S.tripReadOnly = false;
@@ -1768,7 +1862,7 @@ async function boot() {
   renderIcons();
   refreshAllText();
   setInterval(updateClock, 1000);
-  setInterval(() => { const d = S.trends[`${catKey()}|${S.lang}`]; if (d && S.tab !== 'map') renderMeta(d); }, 30e3);
+  setInterval(() => { const d = S.trends[`${catKey()}|${S.lang}`]; if (d && !['map', 'star', 'community'].includes(S.tab)) renderMeta(d); }, 30e3);
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('./sw.js').catch(() => {});
   if (/iphone|ipad|ipod/i.test(navigator.userAgent) && !isStandalone()) showInstall('ios');
 
@@ -1780,7 +1874,7 @@ async function boot() {
   if (sb) {
     fn('config').then((c) => { S.config.features = c.features; }).catch(() => {});
     sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY') setTimeout(() => openAuth('recover'), 0);
+      if (event === 'PASSWORD_RECOVERY') setTimeout(() => { showScreen('settingsScreen'); $('#setAccountBox').classList.remove('hidden'); }, 0);
       setTimeout(() => handleSession(session), 0);
     });
     const { data } = await sb.auth.getSession();
@@ -1804,7 +1898,8 @@ async function boot() {
       S.planDay = 'day1';
       selectTab('map');
     } catch { selectTab('hotplace'); }
-  } else selectTab('hotplace');
+  } else selectTab(S.user && S.stars.length ? 'star' : 'hotplace');
+  if (!S.user && sb && !localStorage.getItem('korrier_browse') && !shared) openAuth('landing');
 
   // 첫 화면 데이터가 오면(최대 7초) 스플래시를 닫고, 나머지 탭도 미리 검색
   prefetchAll();
@@ -1812,4 +1907,4 @@ async function boot() {
   await Promise.race([first ? first.catch(() => {}) : Promise.resolve(), new Promise((r) => setTimeout(r, 7000))]);
   dismissSplash();
 }
-boot();
+// boot()는 social.js 마지막에서 실행

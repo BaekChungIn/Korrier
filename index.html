@@ -34,6 +34,17 @@
     .sheet-enter{ animation:sheetUp .28s cubic-bezier(.2,.8,.2,1); }
     @keyframes sheetUp{ from{ transform:translateY(40px); opacity:.4 } to{ transform:none; opacity:1 } }
     .modal{ display:none; }
+    .set-row{ width:100%; display:flex; align-items:center; gap:14px; padding:18px 20px; font-size:16px; font-weight:600; color:inherit; }
+    .set-val{ font-size:14px; font-weight:400; color:#8E8E93; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    @keyframes fanPop{ 0%{ transform:scale(.2); opacity:0 } 60%{ transform:scale(1.12); opacity:1 } 80%{ transform:scale(.96) } 100%{ transform:scale(1) } }
+    @keyframes fanRing{ 0%{ transform:scale(.8); opacity:.7 } 100%{ transform:scale(1.9); opacity:0 } }
+    @keyframes fadeUp{ from{ transform:translateY(14px); opacity:0 } to{ transform:none; opacity:1 } }
+    .fan-pop{ animation:fanPop .7s cubic-bezier(.2,.9,.3,1.2) both; }
+    .fan-ring{ animation:fanRing 1.4s ease-out .35s 2 both; }
+    .fade-up{ animation:fadeUp .5s ease-out both; }
+    @keyframes fanBit{ 0%{ transform:translate(0,0) scale(.3); opacity:0 } 15%{ opacity:1 } 100%{ transform:translate(var(--x),var(--y)) scale(1); opacity:0 } }
+    .fan-bit{ position:absolute; width:9px; height:9px; border-radius:50%; animation:fanBit 1.1s cubic-bezier(.15,.8,.3,1) both; }
+    .line-clamp-1{ display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
     .wordmark{ background:linear-gradient(90deg,#1B2A6B,#5B2D82); -webkit-background-clip:text; background-clip:text; color:transparent; }
     .safe-top{ padding-top:calc(env(safe-area-inset-top) + 1rem); }
     #tabBar{ height:calc(72px + env(safe-area-inset-bottom)); padding-bottom:env(safe-area-inset-bottom); }
@@ -56,55 +67,42 @@
   </div>
 
   <!-- 헤더 -->
-  <header class="safe-top px-5 pb-3 bg-white/95 backdrop-blur-xl border-b border-black/[0.04] shrink-0 z-30">
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-2 select-none">
-        <img src="./logo.svg" alt="" class="w-11 h-11 -ml-1.5 -my-1">
-        <div>
-          <h2 class="wordmark text-[22px] font-extrabold tracking-tight leading-none">Korrier</h2>
-          <p class="text-[10px] text-[#8E8E93] tracking-[0.12em] mt-0.5 uppercase" data-i18n="tagline"></p>
+  <header class="safe-top px-4 pb-2.5 bg-white/95 backdrop-blur-xl border-b border-black/[0.04] shrink-0 z-30">
+    <div class="flex items-center justify-between gap-2">
+      <button id="btnHome" class="flex items-center gap-1.5 select-none min-w-0">
+        <img src="./logo.svg" alt="" class="w-11 h-11 -ml-1.5 -my-1 shrink-0">
+        <h2 class="wordmark text-[22px] font-extrabold tracking-tight leading-none">Korrier</h2>
+      </button>
+      <div class="flex items-center gap-0.5 shrink-0">
+        <button id="starPill" class="hidden items-center gap-1 pl-0.5 pr-2 py-0.5 mr-1 rounded-full bg-[#FFF0F6] text-[#E11D74] text-[11px] font-bold active:scale-95 transition">
+          <span id="starPillImg" class="w-6 h-6 rounded-full overflow-hidden bg-white flex items-center justify-center"></span><span id="starPillText"></span>
+        </button>
+        <div class="relative">
+          <button id="btnLang" class="w-10 h-10 rounded-full flex items-center justify-center text-[#1D1D1F] hover:bg-black/[0.04] active:scale-95 transition gap-0.5" aria-label="language"><span data-icon="globe" data-icon-cls="w-[22px] h-[22px]"></span><span id="currentLangText" class="hidden"></span></button>
+          <div id="langMenu" class="hidden absolute top-full mt-1.5 right-0 w-52 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
         </div>
-      </div>
-      <div class="flex items-center gap-2">
-        <button id="btnRefresh" class="w-9 h-9 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center active:scale-95 transition" aria-label="refresh">
-          <span id="refreshIcon" data-icon="refresh" data-icon-cls="w-4 h-4"></span>
-        </button>
-        <button id="btnProfile" class="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] active:scale-95 transition">
-          <span id="navAvatar" class="w-7 h-7 rounded-full overflow-hidden bg-[#E2E8F0] flex items-center justify-center text-slate-500"></span>
-          <span id="navProfileName" class="text-[12px] font-medium max-w-[72px] truncate"></span>
-        </button>
-      </div>
-    </div>
-
-    <div class="grid grid-cols-2 gap-2 mt-2.5">
-      <div class="relative">
-        <button id="btnLang" class="w-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] rounded-xl px-3 py-2 flex items-center justify-between text-[13px]">
-          <span class="flex items-center gap-1.5 truncate"><span data-icon="globe" data-icon-cls="w-4 h-4 text-[#6E6E73]"></span><span id="currentLangText" class="truncate"></span></span>
-          <span data-icon="chevD" data-icon-cls="w-3.5 h-3.5 text-[#8E8E93]"></span>
-        </button>
-        <div id="langMenu" class="hidden absolute top-full mt-1.5 left-0 w-52 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
-      </div>
-      <div class="relative">
-        <button id="btnAuto" class="w-full bg-[#F2F2F7] hover:bg-[#E5E5EA] border border-black/[0.04] rounded-xl px-3 py-2 flex items-center justify-between text-[13px] text-[#2563EB]">
-          <span class="flex items-center gap-1.5 truncate"><span data-icon="timer" data-icon-cls="w-4 h-4"></span><span id="currentAutoText" class="truncate font-medium"></span></span>
-          <span data-icon="chevD" data-icon-cls="w-3.5 h-3.5"></span>
-        </button>
-        <div id="autoMenu" class="hidden absolute top-full mt-1.5 right-0 w-48 bg-white/95 backdrop-blur-xl rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
+        <button id="btnFriends" class="w-10 h-10 rounded-full flex items-center justify-center text-[#1D1D1F] hover:bg-black/[0.04] active:scale-95 transition" aria-label="friends" data-icon="users" data-icon-cls="w-[22px] h-[22px]"></button>
+        <button id="btnSettings" class="w-10 h-10 rounded-full flex items-center justify-center text-[#1D1D1F] hover:bg-black/[0.04] active:scale-95 transition" aria-label="settings" data-icon="gear" data-icon-cls="w-[22px] h-[22px]"></button>
       </div>
     </div>
   </header>
 
   <!-- 본문 -->
   <section id="contentContainer" class="flex-1 overflow-y-auto px-4 py-4 space-y-4 pb-28 no-scrollbar bg-[#F5F5F7]">
-    <div class="bg-white rounded-[24px] px-5 py-4 border border-black/[0.03] shadow-[0_2px_14px_rgba(0,0,0,0.03)]">
+    <div id="catCard" class="bg-white rounded-[24px] px-5 py-4 border border-black/[0.03] shadow-[0_2px_14px_rgba(0,0,0,0.03)]">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <h3 id="categoryTitle" class="text-[26px] font-bold tracking-tight leading-tight"></h3>
           <p id="liveClock" class="text-[12px] text-[#8E8E93] font-medium tracking-wider mt-0.5"></p>
         </div>
-        <div id="liveBadge" class="flex items-center gap-1.5 bg-[#E8F5E9] border border-[#C8E6C9] px-3 py-1 rounded-full shrink-0 mt-1">
-          <span class="w-2 h-2 rounded-full bg-[#34C759] animate-pulse"></span>
-          <span class="text-[12px] text-[#2E7D32]" data-i18n="liveSearch"></span>
+        <div class="flex items-center gap-1.5 shrink-0 mt-1">
+          <div id="liveBadge" class="flex items-center gap-1.5 bg-[#E8F5E9] border border-[#C8E6C9] px-3 py-1 rounded-full">
+            <span class="w-2 h-2 rounded-full bg-[#34C759] animate-pulse"></span>
+            <span class="text-[12px] text-[#2E7D32]" data-i18n="liveSearch"></span>
+          </div>
+          <button id="btnRefresh" class="w-8 h-8 rounded-full bg-[#F2F2F7] hover:bg-[#E5E5EA] flex items-center justify-center active:scale-95 transition" aria-label="refresh">
+            <span id="refreshIcon" data-icon="refresh" data-icon-cls="w-4 h-4"></span>
+          </button>
         </div>
       </div>
       <div id="metaLine" class="hidden mt-2 text-[11px] text-[#8E8E93] leading-relaxed"></div>
@@ -184,7 +182,11 @@
 
     <!-- 리스트 -->
     <div id="listArea" class="space-y-4"></div>
+    <div id="starView" class="hidden space-y-4"></div>
+    <div id="communityView" class="hidden space-y-3"></div>
   </section>
+
+  <button id="btnWrite" class="hidden absolute right-5 z-[35] w-14 h-14 rounded-full bg-[#1E3A8A] text-white shadow-[0_10px_24px_rgba(30,58,138,0.35)] items-center justify-center active:scale-95 transition" style="bottom:calc(88px + env(safe-area-inset-bottom))" data-icon="pencil" data-icon-cls="w-6 h-6"></button>
 
   <!-- 하단 탭바 -->
   <nav id="tabBar" class="absolute bottom-0 left-0 right-0 h-[72px] bg-white/90 backdrop-blur-2xl border-t border-black/[0.05] flex items-stretch justify-around px-1 z-30"></nav>
@@ -212,36 +214,42 @@
     <div id="detailBody" class="overflow-y-auto no-scrollbar space-y-4 pb-3"></div>
   </div>
 
-  <!-- 로그인/회원가입 -->
-  <div id="authModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[160] items-end sm:items-center justify-center p-0 sm:p-4">
-    <div class="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-sm p-6 shadow-2xl relative">
-      <div class="flex items-center justify-between mb-1">
-        <h4 id="authTitle" class="text-[20px] font-bold tracking-tight"></h4>
-        <button data-close="authModal" class="w-8 h-8 rounded-full bg-[#F2F2F7] flex items-center justify-center text-[#8E8E93]" data-icon="close" data-icon-cls="w-4 h-4"></button>
+  <!-- 로그인/회원가입 (전체 화면) -->
+  <div id="authScreen" class="hidden absolute inset-0 z-[180] bg-[#F7F8F9] flex-col">
+    <div id="authLanding" class="flex-1 flex flex-col px-6" style="padding-bottom:calc(24px + env(safe-area-inset-bottom))">
+      <div class="flex-1 flex flex-col items-center justify-center text-center">
+        <img src="./logo.svg" alt="" class="w-[150px] h-[150px]">
+        <p class="text-[15px] text-[#6E6E73] mt-2" data-i18n="landingSub"></p>
+        <h1 class="wordmark text-[46px] font-black tracking-tight leading-tight">Korrier</h1>
       </div>
-      <p class="text-[12px] text-[#8E8E93] mb-4" data-i18n="authSub"></p>
+      <button id="btnGoogle" class="w-full py-4 rounded-[20px] bg-white border border-black/[0.08] text-[16px] font-bold flex items-center justify-center gap-3 active:scale-[0.98] transition">
+        <svg class="w-5 h-5" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+        <span data-i18n="continueGoogle"></span>
+      </button>
+      <button data-auth-go="login" class="w-full py-4 text-[15px] font-semibold text-[#4B5563]" data-i18n="continueEmail"></button>
+      <button id="btnBrowse" class="w-full pb-2 text-[12px] text-[#8E8E93]" data-i18n="browseOnly"></button>
+    </div>
+    <div id="authForms" class="hidden flex-1 flex-col overflow-y-auto no-scrollbar px-6 safe-top">
+      <button id="authBack" class="w-10 h-10 -ml-2 flex items-center justify-center" data-icon="chevL" data-icon-cls="w-6 h-6"></button>
+      <h1 id="authTitle" class="text-[34px] font-black tracking-tight mt-5"></h1>
+      <p id="authSubText" class="text-[14px] text-[#8E8E93] mt-1.5 mb-7"></p>
       <form id="authForm" class="space-y-3" novalidate>
-        <label id="emailWrap" class="block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="email"></span>
-          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="mail" data-icon-cls="w-4 h-4"></span>
-          <input id="authEmail" type="email" autocomplete="email" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500" required></div></label>
-        <label id="pwWrap" class="block"><span id="pwLabel" class="text-[11px] font-medium text-[#8E8E93]" data-i18n="password"></span>
-          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="lock" data-icon-cls="w-4 h-4"></span>
-          <input id="authPassword" type="password" autocomplete="current-password" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500" required></div>
-          <span id="pwHintText" class="hidden text-[11px] text-[#8E8E93] mt-1 block" data-i18n="pwHint"></span></label>
-        <label id="nickWrap" class="hidden block"><span class="text-[11px] font-medium text-[#8E8E93]" data-i18n="nickname"></span>
-          <div class="relative mt-1"><span class="absolute left-3 top-3 text-[#8E8E93]" data-icon="user" data-icon-cls="w-4 h-4"></span>
-          <input id="authNickname" type="text" maxlength="20" class="w-full pl-9 pr-3 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"></div></label>
-        <p id="authError" class="hidden text-[12px] text-rose-600 flex items-center gap-1"></p>
-        <p id="authInfo" class="hidden text-[12px] text-[#2E7D32] bg-[#E8F5E9] rounded-xl px-3 py-2 flex items-start gap-1.5"></p>
-        <button id="authSubmit" type="submit" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-[#1E3A8A] to-[#2563EB] text-white font-medium text-[14px] active:scale-95 transition disabled:opacity-60"></button>
+        <input id="authNickname" type="text" maxlength="20" class="hidden w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="nickname">
+        <input id="authEmail" type="email" autocomplete="email" class="w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="emailPh">
+        <input id="authCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" class="hidden w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[22px] tracking-[0.4em] font-bold text-center outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="codePh">
+        <input id="authPassword" type="password" autocomplete="current-password" class="w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="pwPh">
+        <p id="authError" class="hidden text-[13px] text-rose-600 flex items-center gap-1.5 px-1"></p>
+        <p id="authInfo" class="hidden text-[13px] text-[#2E7D32] bg-[#E8F5E9] rounded-2xl px-4 py-3 flex items-start gap-1.5"></p>
+        <button id="authSubmit" type="submit" class="w-full py-4 rounded-[18px] bg-[#1B1F27] text-white font-bold text-[16px] active:scale-[0.98] transition disabled:opacity-50"></button>
       </form>
-      <button id="authSwitch" class="w-full mt-3 text-[12px] text-[#0071E3] font-medium"></button>
-      <button id="authForgot" class="w-full mt-2 text-[11px] text-[#8E8E93]" data-i18n="forgotPw"></button>
+      <p id="authSwitchWrap" class="text-center text-[14px] text-[#6E6E73] mt-5"><span id="authSwitchQ"></span> <button id="authSwitch" class="font-bold text-[#1E3A8A]"></button></p>
+      <button id="authForgot" class="mx-auto mt-3 text-[13px] text-[#8E8E93]" data-i18n="forgotPw"></button>
+      <button id="authResend" class="hidden mx-auto mt-3 text-[13px] text-[#1E3A8A] font-semibold" data-i18n="resend"></button>
     </div>
   </div>
 
   <!-- 프로필 -->
-  <div id="profileModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[160] items-end sm:items-center justify-center p-0 sm:p-4">
+  <div id="profileModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[170] items-end sm:items-center justify-center p-0 sm:p-4">
     <div class="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-sm p-6 shadow-2xl max-h-[90%] overflow-y-auto no-scrollbar">
       <div class="flex items-center justify-between pb-3 border-b border-black/[0.04] mb-4">
         <h4 class="text-[18px] font-bold" data-i18n="profile"></h4>
@@ -259,22 +267,94 @@
         <input id="profileNickname" type="text" maxlength="20" class="mt-1 w-full px-3.5 py-2.5 rounded-2xl bg-[#F2F2F7] text-[14px] font-medium outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"></label>
       <button id="btnSaveProfile" class="w-full py-3 rounded-2xl bg-gradient-to-r from-[#1E3A8A] to-[#2563EB] text-white font-medium text-[14px] active:scale-95 transition" data-i18n="save"></button>
 
-      <details class="mt-5 bg-[#F8F8FA] rounded-2xl p-4">
-        <summary class="text-[13px] font-semibold cursor-pointer flex items-center gap-1.5"><span data-icon="lock" data-icon-cls="w-4 h-4"></span><span data-i18n="changePw"></span></summary>
-        <div class="space-y-2 mt-3">
-          <input id="pwCurrent" type="password" autocomplete="current-password" class="w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none" data-i18n-ph="currentPw">
-          <input id="pwNext" type="password" autocomplete="new-password" class="w-full px-3 py-2 rounded-xl bg-white border border-black/[0.06] text-[13px] outline-none" data-i18n-ph="newPw">
-          <button id="btnChangePw" class="w-full py-2 rounded-xl bg-[#1D1D1F] text-white text-[12px] font-medium" data-i18n="changePw"></button>
-        </div>
-      </details>
-      <div class="grid grid-cols-2 gap-2 mt-4">
-        <button id="btnLogout" class="py-2.5 rounded-2xl bg-[#F2F2F7] text-[13px] font-medium flex items-center justify-center gap-1.5"><span data-icon="logout" data-icon-cls="w-4 h-4"></span><span data-i18n="logout"></span></button>
-        <button id="btnDeleteAccount" class="py-2.5 rounded-2xl bg-rose-50 text-rose-600 text-[12px] font-medium" data-i18n="deleteAccount"></button>
-      </div>
     </div>
   </div>
 
-  <!-- 일정 만들기 마법사 -->
+  <!-- 설정 -->
+  <div id="settingsScreen" class="hidden absolute inset-0 z-[125] bg-[#F5F5F7] flex-col">
+    <div class="safe-top px-4 pb-3 bg-white flex items-center shrink-0">
+      <button data-screen-close="settingsScreen" class="w-10 h-10 rounded-full bg-[#F2F2F7] flex items-center justify-center" data-icon="chevL" data-icon-cls="w-5 h-5"></button>
+      <h3 class="flex-1 text-center text-[18px] font-bold -ml-10 pointer-events-none" data-i18n="settings"></h3>
+    </div>
+    <div class="flex-1 overflow-y-auto no-scrollbar">
+      <div id="setProfile" class="bg-white px-5 py-5 flex items-center gap-4"></div>
+      <div class="h-3"></div>
+      <div class="bg-white divide-y divide-black/[0.05]">
+        <button data-set="profile" class="set-row"><span data-icon="pencil" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="profileName"></span><span id="setNickVal" class="set-val"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
+        <button data-set="stars" class="set-row"><span data-icon="heart" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="starSettings"></span><span id="setStarVal" class="set-val"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
+        <button data-set="account" class="set-row"><span data-icon="user" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="account"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
+      </div>
+      <div id="setAccountBox" class="hidden bg-[#FAFAFC] px-5 py-4 space-y-2 border-t border-black/[0.04]">
+        <p class="text-[12px] text-[#8E8E93]" data-i18n="changePw"></p>
+        <input id="pwCurrent" type="password" autocomplete="current-password" class="w-full px-4 py-3 rounded-2xl bg-white border border-black/[0.06] text-[14px] outline-none" data-i18n-ph="currentPw">
+        <input id="pwNext" type="password" autocomplete="new-password" class="w-full px-4 py-3 rounded-2xl bg-white border border-black/[0.06] text-[14px] outline-none" data-i18n-ph="newPw">
+        <button id="btnChangePw" class="w-full py-3 rounded-2xl bg-[#1D1D1F] text-white text-[13px] font-semibold" data-i18n="changePw"></button>
+        <button id="btnDeleteAccount" class="w-full py-3 rounded-2xl bg-rose-50 text-rose-600 text-[13px] font-semibold" data-i18n="deleteAccount"></button>
+      </div>
+      <div class="h-3"></div>
+      <div class="bg-white divide-y divide-black/[0.05]">
+        <div class="set-row relative">
+          <span data-icon="timer" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="autoRefresh"></span>
+          <button id="btnAuto" class="flex items-center gap-1 text-[14px] text-[#2563EB] font-semibold"><span id="currentAutoText"></span><span data-icon="chevD" data-icon-cls="w-4 h-4"></span></button>
+          <div id="autoMenu" class="hidden absolute top-full right-4 -mt-2 w-48 bg-white rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
+        </div>
+        <button data-set="lang" class="set-row"><span data-icon="globe" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="language"></span><span id="setLangVal" class="set-val"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
+      </div>
+      <div class="h-3"></div>
+      <div class="bg-white">
+        <button id="btnLogout" class="set-row text-rose-500"><span data-icon="logout" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left font-semibold" data-i18n="logout"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
+      </div>
+      <div class="h-24"></div>
+    </div>
+  </div>
+
+  <!-- MY스타 관리 -->
+  <div id="starManageScreen" class="hidden absolute inset-0 z-[128] bg-[#F5F5F7] flex-col">
+    <div class="safe-top px-4 pb-3 bg-white flex items-center shrink-0">
+      <button data-screen-close="starManageScreen" class="w-10 h-10 rounded-full bg-[#F2F2F7] flex items-center justify-center" data-icon="chevL" data-icon-cls="w-5 h-5"></button>
+      <h3 class="flex-1 text-center text-[18px] font-bold -ml-10 pointer-events-none" data-i18n="starSettings"></h3>
+    </div>
+    <div id="starManageList" class="flex-1 overflow-y-auto no-scrollbar p-4 space-y-3"></div>
+  </div>
+
+  <!-- 친구 -->
+  <div id="friendsScreen" class="hidden absolute inset-0 z-[125] bg-[#F5F5F7] flex-col">
+    <div class="safe-top px-4 pb-3 bg-white flex items-center shrink-0">
+      <button data-screen-close="friendsScreen" class="w-10 h-10 rounded-full bg-[#F2F2F7] flex items-center justify-center" data-icon="chevL" data-icon-cls="w-5 h-5"></button>
+      <h3 class="flex-1 text-center text-[18px] font-bold -ml-10 pointer-events-none" data-i18n="friends"></h3>
+    </div>
+    <div id="friendsBody" class="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4"></div>
+  </div>
+
+  <!-- 스타 등록 -->
+  <div id="starModal" class="hidden absolute inset-0 z-[150] bg-white flex-col">
+    <div class="safe-top px-4 pb-3 flex items-center shrink-0 border-b border-black/[0.05]">
+      <button id="starModalBack" class="w-10 h-10 rounded-full bg-[#F2F2F7] flex items-center justify-center" data-icon="chevL" data-icon-cls="w-5 h-5"></button>
+      <h3 class="flex-1 text-center text-[18px] font-bold -ml-10 pointer-events-none" data-i18n="starRegister"></h3>
+    </div>
+    <div id="starModalBody" class="flex-1 overflow-y-auto no-scrollbar p-5"></div>
+  </div>
+
+  <!-- 팬 등록 애니메이션 -->
+  <div id="fanAnim" class="hidden absolute inset-0 z-[190] bg-white flex-col items-center justify-center px-8 text-center"></div>
+
+  <!-- 글쓰기 -->
+  <div id="postModal" class="hidden absolute inset-0 z-[150] bg-white flex-col">
+    <div class="safe-top px-4 pb-3 flex items-center gap-2 shrink-0 border-b border-black/[0.05]">
+      <button data-screen-close="postModal" class="w-10 h-10 rounded-full bg-[#F2F2F7] flex items-center justify-center" data-icon="close" data-icon-cls="w-5 h-5"></button>
+      <h3 class="flex-1 text-center text-[18px] font-bold" data-i18n="write"></h3>
+      <button id="btnPostSubmit" class="px-4 py-2 rounded-full bg-[#1E3A8A] text-white text-[14px] font-bold disabled:opacity-50" data-i18n="post"></button>
+    </div>
+    <div class="flex-1 overflow-y-auto no-scrollbar p-5 space-y-4">
+      <div id="postCats" class="flex flex-wrap gap-2"></div>
+      <div><p class="text-[12px] font-semibold text-[#8E8E93] mb-2" data-i18n="postStar"></p><div id="postStars" class="flex flex-wrap gap-2"></div></div>
+      <input id="postTitle" maxlength="80" class="w-full px-1 py-2 text-[20px] font-bold outline-none border-b border-black/[0.08]" data-i18n-ph="postTitlePh">
+      <textarea id="postBody" maxlength="3000" rows="10" class="w-full px-1 py-2 text-[15px] leading-relaxed outline-none resize-none" data-i18n-ph="postBodyPh"></textarea>
+      <label class="flex items-center gap-2 text-[14px] font-medium"><input id="postAnon" type="checkbox" checked class="w-5 h-5 accent-[#1E3A8A]"><span data-i18n="anonymous"></span></label>
+    </div>
+  </div>
+
+  <!-- 일정 만들기 마법사 -->  <!-- 일정 만들기 마법사 -->
   <div id="wizardModal" class="modal fixed inset-0 bg-black/50 backdrop-blur-sm z-[155] items-end sm:items-center justify-center p-0 sm:p-4">
     <div class="bg-white rounded-t-[36px] sm:rounded-[36px] w-full max-w-md max-h-[90%] overflow-hidden flex flex-col shadow-2xl">
       <div class="px-6 pt-5 pb-3 border-b border-black/[0.04] flex items-center justify-between">
@@ -365,5 +445,6 @@
 <script src="./i18n.js"></script>
 <script src="./icons.js"></script>
 <script src="./app.js"></script>
+<script src="./social.js"></script>
 </body>
 </html>
