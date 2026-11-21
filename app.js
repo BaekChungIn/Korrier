@@ -277,7 +277,7 @@ function refreshAllText() {
   renderTabBar();
   updateCategoryTitle();
   renderProfileButton();
-  if (!$('#authScreen').classList.contains('hidden')) setAuthView(S.authView);
+  if (!$('#authScreen').classList.contains('hidden')) setAuthView(S.authView, true);
   updateClock();
 }
 
@@ -733,6 +733,37 @@ function renderProfileButton() {
   if (typeof renderUserChrome === 'function') renderUserChrome();
 }
 
+/* ---------- 국가 → 기본 언어 ---------- */
+const COUNTRIES = {
+  KR: 'ko', US: 'en', GB: 'en', CA: 'en', AU: 'en', NZ: 'en', IE: 'en', SG: 'en', PH: 'en', MY: 'en', IN: 'en', ID: 'en', VN: 'en', DE: 'en', IT: 'en', NL: 'en', BR: 'en', RU: 'en', MN: 'en', AE: 'en',
+  JP: 'ja', CN: 'zh', TW: 'zh', HK: 'zh', MO: 'zh',
+  ES: 'es', MX: 'es', AR: 'es', CL: 'es', CO: 'es', PE: 'es',
+  FR: 'fr', BE: 'fr', CH: 'fr', TH: 'th',
+};
+const countryName = (cc) => { try { return new Intl.DisplayNames([langInfo().locale.split('-u-')[0]], { type: 'region' }).of(cc) || cc; } catch { return cc; } };
+function guessCountry() {
+  const m = (navigator.language || '').match(/-([A-Z]{2})/i);
+  const cc = m && m[1].toUpperCase();
+  if (cc && COUNTRIES[cc]) return cc;
+  return { ko: 'KR', ja: 'JP', zh: 'CN', es: 'ES', fr: 'FR', th: 'TH' }[S.lang] || 'US';
+}
+function countryOptions(sel, withEmpty) {
+  const list = Object.keys(COUNTRIES).map((cc) => [cc, countryName(cc)]).sort((a, b) => (a[0] === 'KR' ? -1 : b[0] === 'KR' ? 1 : a[1].localeCompare(b[1], langInfo().locale)));
+  return (withEmpty ? `<option value="" disabled ${sel ? '' : 'selected'}>${esc(t('countryPick'))}</option>` : '')
+    + list.map(([cc, n]) => `<option value="${cc}" ${cc === sel ? 'selected' : ''}>${esc(n)}</option>`).join('');
+}
+function renderAuthCountry() {
+  const el = $('#authCountry');
+  S.signupCountry = S.signupCountry || '';
+  el.innerHTML = countryOptions(S.signupCountry, true);
+  el.classList.toggle('text-[#8E8E93]', !S.signupCountry);
+}
+$('#authCountry').onchange = (e) => {
+  S.signupCountry = e.target.value;
+  const lang = COUNTRIES[S.signupCountry] || 'en';
+  if (lang !== S.lang) changeLanguage(lang); else renderAuthCountry();
+};
+
 /* ---------- 로그인 · 회원가입 (짬타이거 방식: 이메일 인증코드) ---------- */
 S.authView = 'landing';
 function openAuth(view = 'landing') {
@@ -750,7 +781,7 @@ const AUTH_TEXT = {
   forgot: ['forgotTitle', 'resetSub', 'sendCode'],
   reset: ['recoverTitle', 'verifySub', 'save'],
 };
-function setAuthView(v) {
+function setAuthView(v, noFocus) {
   S.authView = v;
   const landing = v === 'landing';
   $('#authLanding').classList.toggle('hidden', !landing); $('#authLanding').classList.toggle('flex', landing);
@@ -766,6 +797,8 @@ function setAuthView(v) {
   show('#authEmail', v === 'login' || v === 'signup' || v === 'forgot');
   show('#authCode', v === 'verify' || v === 'reset');
   show('#authPassword', v === 'login' || v === 'signup' || v === 'reset');
+  show('#authCountryWrap', v === 'signup');
+  if (v === 'signup') renderAuthCountry();
   $('#authPassword').placeholder = v === 'login' ? t('pwPh') : `${t(v === 'reset' ? 'newPw' : 'pwPh')} (${t('pwHint')})`;
   $('#authPassword').autocomplete = v === 'login' ? 'current-password' : 'new-password';
   show('#authSwitchWrap', v === 'login' || v === 'signup');
@@ -774,7 +807,7 @@ function setAuthView(v) {
   show('#authForgot', v === 'login');
   show('#authResend', v === 'verify' || v === 'reset');
   if (v === 'verify' || v === 'reset') $('#authCode').value = '';
-  setTimeout(() => { const f = v === 'verify' || v === 'reset' ? '#authCode' : v === 'signup' ? '#authNickname' : '#authEmail'; $(f).focus(); }, 60);
+  if (!noFocus) setTimeout(() => { const f = v === 'verify' || v === 'reset' ? '#authCode' : v === 'signup' ? '#authNickname' : '#authEmail'; $(f).focus(); }, 60);
 }
 document.addEventListener('click', (e) => { const g = e.target.closest('[data-auth-go]'); if (g) setAuthView(g.dataset.authGo); });
 $('#authBack').onclick = () => setAuthView({ login: 'landing', signup: 'login', verify: 'signup', forgot: 'login', reset: 'forgot' }[S.authView] || 'landing');
@@ -845,7 +878,8 @@ $('#authForm').onsubmit = async (e) => {
       if (!nickname) throw mkErr('nickname_required');
       if (!okEmail) throw mkErr('invalid_email');
       if (pw.length < 8) throw mkErr('weak_password');
-      const { data, error } = await sb.auth.signUp({ email, password: pw, options: { data: { nickname, lang: S.lang }, emailRedirectTo: appUrl() } });
+      if (!S.signupCountry) throw mkErr('country_required');
+      const { data, error } = await sb.auth.signUp({ email, password: pw, options: { data: { nickname, lang: S.lang, country: S.signupCountry }, emailRedirectTo: appUrl() } });
       if (error) throw authFail(error);
       if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) throw mkErr('email_taken');
       if (data.session) { S.welcomePending = true; closeAuth(); return; }
@@ -898,9 +932,13 @@ async function handleSession(session) {
     if (!prof) {
       const meta = u.user_metadata || {};
       const nickname = String(meta.nickname || (u.email || '').split('@')[0] || 'Traveler').slice(0, 20);
-      prof = must(await sb.from('korrier_profiles').upsert({ id: u.id, nickname, lang: LANGS.some((l) => l.code === meta.lang) ? meta.lang : S.lang }).select().single());
+      const row = { id: u.id, nickname, lang: LANGS.some((l) => l.code === meta.lang) ? meta.lang : S.lang };
+      const cc = COUNTRIES[meta.country] ? meta.country : '';
+      let r = await sb.from('korrier_profiles').upsert(cc ? { ...row, country: cc } : row).select().single();
+      if (r.error && cc) r = await sb.from('korrier_profiles').upsert(row).select().single(); // country 칸이 아직 없을 때
+      prof = must(r);
     }
-    await onLogin({ id: u.id, email: u.email, nickname: prof.nickname, photo: prof.photo || '', lang: prof.lang, friend_code: prof.friend_code || '' });
+    await onLogin({ id: u.id, email: u.email, nickname: prof.nickname, photo: prof.photo || '', lang: prof.lang, friend_code: prof.friend_code || '', country: prof.country || '' });
     if (S.welcomePending) { S.welcomePending = false; toast(t('toast_welcome', { name: prof.nickname }), 'user'); }
   } catch (e) {
     sessionUid = null;

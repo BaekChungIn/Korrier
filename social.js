@@ -514,6 +514,9 @@ function renderSettings() {
   const ms = mainStar();
   $('#setStarVal').textContent = ms ? `${ms.name} D+${fanDays(ms.fan_since)}` : '';
   $('#setLangVal').textContent = langInfo().label;
+  const cc = (u && u.country) || localStorage.getItem('korrier_country') || '';
+  $('#setCountryVal').textContent = cc ? countryName(cc) : '';
+  $('#setCountry').innerHTML = countryOptions(cc, !cc);
   $('#btnLogout').classList.toggle('hidden', !u);
   const lb = $('#setLangBox');
   if (lb) lb.innerHTML = langListHtml();
@@ -537,6 +540,19 @@ $('#settingsScreen').addEventListener('click', (e) => {
   else if (a === 'stars') openStarManage();
   else if (a === 'account') { $('#setAccountBox').classList.toggle('hidden'); resetDeleteBtn(); }
 });
+
+$('#setCountry').onchange = async (e) => {
+  const cc = e.target.value;
+  if (!COUNTRIES[cc]) return;
+  localStorage.setItem('korrier_country', cc);
+  if (S.user) {
+    S.user.country = cc;
+    await sb.from('korrier_profiles').update({ country: cc }).eq('id', S.user.id);
+  }
+  const lang = COUNTRIES[cc];
+  if (lang !== S.lang) changeLanguage(lang);
+  renderSettings();
+};
 
 /* ---------- MY스타 관리 ---------- */
 function openStarManage() { renderStarManage(); showScreen('starManageScreen'); }
