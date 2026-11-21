@@ -238,6 +238,11 @@
         <input id="authEmail" type="email" autocomplete="email" class="w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="emailPh">
         <input id="authCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" class="hidden w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[22px] tracking-[0.4em] font-bold text-center outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="codePh">
         <input id="authPassword" type="password" autocomplete="current-password" class="w-full px-5 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white" data-i18n-ph="pwPh">
+        <div id="authCountryWrap" class="hidden relative">
+          <span class="absolute left-5 top-1/2 -translate-y-1/2 text-[#8E8E93] pointer-events-none" data-icon="globe" data-icon-cls="w-5 h-5"></span>
+          <select id="authCountry" class="w-full pl-12 pr-10 py-4 rounded-[18px] bg-[#EEF0F3] text-[16px] outline-none border-2 border-transparent focus:border-[#1E3A8A] focus:bg-white appearance-none"></select>
+          <span class="absolute right-5 top-1/2 -translate-y-1/2 text-[#8E8E93] pointer-events-none" data-icon="chevD" data-icon-cls="w-4 h-4"></span>
+        </div>
         <p id="authError" class="hidden text-[13px] text-rose-600 flex items-center gap-1.5 px-1"></p>
         <p id="authInfo" class="hidden text-[13px] text-[#2E7D32] bg-[#E8F5E9] rounded-2xl px-4 py-3 flex items-start gap-1.5"></p>
         <button id="authSubmit" type="submit" class="w-full py-4 rounded-[18px] bg-[#1B1F27] text-white font-bold text-[16px] active:scale-[0.98] transition disabled:opacity-50"></button>
@@ -298,13 +303,15 @@
           <button id="btnAuto" class="flex items-center gap-1 text-[14px] text-[#2563EB] font-semibold"><span id="currentAutoText"></span><span data-icon="chevD" data-icon-cls="w-4 h-4"></span></button>
           <div id="autoMenu" class="hidden absolute top-full right-4 -mt-2 w-48 bg-white rounded-2xl shadow-xl border border-black/[0.06] py-1.5 z-50 text-[14px]"></div>
         </div>
+        <label class="set-row relative"><span data-icon="pin" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="country"></span><span id="setCountryVal" class="set-val"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span>
+          <select id="setCountry" class="absolute inset-0 opacity-0"></select></label>
         <button data-set="lang" class="set-row"><span data-icon="globe" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left" data-i18n="language"></span><span id="setLangVal" class="set-val"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
       </div>
       <div class="h-3"></div>
       <div class="bg-white">
         <button id="btnLogout" class="set-row text-rose-500"><span data-icon="logout" data-icon-cls="w-6 h-6"></span><span class="flex-1 text-left font-semibold" data-i18n="logout"></span><span data-icon="chevR" data-icon-cls="w-4 h-4 text-[#C7C7CC]"></span></button>
       </div>
-      <p class="text-center text-[12px] text-[#AEAEB2] mt-6">Korrier v3.0.1</p>
+      <p class="text-center text-[12px] text-[#AEAEB2] mt-6">Korrier v3.0.2</p>
       <div class="h-24"></div>
     </div>
   </div>
