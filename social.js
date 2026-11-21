@@ -85,6 +85,8 @@ const SEGS = [
 const SCH_STYLE = {
   concert: { ic: 'mic', c: '#4F46E5' }, fanmeeting: { ic: 'heart', c: '#E11D74' }, comeback: { ic: 'disc', c: '#0EA5E9' },
   broadcast: { ic: 'tv', c: '#F59E0B' }, event: { ic: 'star', c: '#10B981' }, ticket: { ic: 'ticket', c: '#EF4444' },
+  match: { ic: 'ball', c: '#16A34A' }, youtube: { ic: 'play', c: '#DC2626' }, festival: { ic: 'sparkles', c: '#D946EF' },
+  fashion: { ic: 'bag', c: '#111827' }, stage: { ic: 'music', c: '#7C3AED' }, release: { ic: 'film', c: '#0891B2' },
 };
 
 function renderStarView() {
@@ -171,7 +173,8 @@ async function loadFeed(name, force) {
   const prev = S.feeds[key];
   if (!prev || prev.error) S.feeds[key] = { loading: true };
   try {
-    const d = await fn('star_feed', { name, lang, force: !!force });
+    const st = S.stars.find((x) => x.name === name);
+    const d = await fn('star_feed', { name, lang, force: !!force, sub: (st && st.sub) || '' });
     S.feeds[key] = d;
     if (d.refreshing) setTimeout(() => { if (S.feeds[key] === d) loadFeed(name); }, 45e3);
   } catch (e) {

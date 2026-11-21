@@ -47,7 +47,7 @@ const S = {
   authMode: 'login',
   stars: [],
   starIdx: 0,
-  starSeg: 'news',
+  starSeg: 'schedule',
   feeds: {},
   community: { cat: 'all', sort: 'new', posts: [], offset: 0, done: false, loading: false },
 };
@@ -173,13 +173,28 @@ function catKey() {
 }
 
 function renderTabBar() {
-  $('#tabBar').innerHTML = TABS.map((tb) => {
+  const bar = $('#tabBar');
+  const keep = bar.querySelector('#tabScroll') ? bar.querySelector('#tabScroll').scrollLeft : null;
+  const tabs = TABS.map((tb) => {
     const on = tb.key === S.tab;
-    return `<button data-tab="${tb.key}" class="flex-1 flex flex-col items-center justify-center gap-0.5 min-w-0 transition ${on ? 'font-semibold' : 'text-[#8E8E93] font-normal hover:text-[#1D1D1F]'}" style="${on ? `color:${tb.color}` : ''}">
+    return `<button data-tab="${tb.key}" class="tab-item shrink-0 snap-start flex flex-col items-center justify-center gap-0.5 min-w-0 transition ${on ? 'font-semibold' : 'text-[#8E8E93] font-normal hover:text-[#1D1D1F]'}" style="${on ? `color:${tb.color}` : ''}">
       ${icon(tb.icon, 'w-[21px] h-[21px]', on ? 2.1 : 1.7)}
       <span class="text-[10px] tracking-tighter truncate max-w-full px-0.5">${esc(t(I18N['navs_' + tb.key] ? 'navs_' + tb.key : 'nav_' + tb.key))}</span>
     </button>`;
   }).join('');
+  bar.innerHTML = `<div id="tabScroll" class="flex-1 flex overflow-x-auto no-scrollbar snap-x snap-mandatory scroll-smooth">${tabs}</div>
+    <button id="tabArrow" class="w-9 shrink-0 flex items-center justify-center text-[#8E8E93] border-l border-black/[0.05]" aria-label="${esc(t('moreTabs'))}"></button>`;
+  const sc = $('#tabScroll');
+  const upd = () => { const end = sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 4; $('#tabArrow').innerHTML = icon(end ? 'chevL' : 'chevR', 'w-5 h-5', 2.2); };
+  sc.onscroll = upd;
+  $('#tabArrow').onclick = () => { const end = sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 4; sc.scrollTo({ left: end ? 0 : sc.scrollWidth, behavior: 'smooth' }); };
+  // 선택된 탭이 보이도록
+  sc.style.scrollBehavior = 'auto';
+  if (keep !== null) sc.scrollLeft = keep;
+  const act = sc.querySelector(`[data-tab="${S.tab}"]`);
+  if (act && (act.offsetLeft < sc.scrollLeft || act.offsetLeft + act.offsetWidth > sc.scrollLeft + sc.clientWidth)) sc.scrollLeft = act.offsetLeft < sc.scrollLeft ? 0 : sc.scrollWidth;
+  sc.style.scrollBehavior = '';
+  upd();
 }
 $('#tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('[data-tab]');
