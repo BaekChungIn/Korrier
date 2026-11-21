@@ -45,6 +45,7 @@ const S = {
   hotSel: null,
   detail: null,
   authMode: 'login',
+  concertSub: 'kpop',
   stars: [],
   starIdx: 0,
   starSeg: 'schedule',
@@ -165,10 +166,12 @@ const CAT_STYLE = {
   'fashion-musinsa': { bg: '#F2F2F7', fg: '#1D1D1F' },
   'fashion-ably': { bg: '#FFF1F3', fg: '#E11D48' },
   concert: { bg: '#EAF2FF', fg: '#2563EB' },
+  'concert-global': { bg: '#F3E8FF', fg: '#7C3AED' },
   slang: { bg: '#EAF7EC', fg: '#4CAF50' },
 };
 function catKey() {
   if (S.tab === 'fashion') return S.fashionSub === 'artist' ? 'fashion-artist' : `fashion-${S.platform}`;
+  if (S.tab === 'concert') return S.concertSub === 'global' ? 'concert-global' : 'concert';
   return S.tab;
 }
 
@@ -202,7 +205,7 @@ $('#tabBar').addEventListener('click', (e) => {
 });
 
 function hideMainViews() {
-  ['#listArea', '#mapView', '#fashionSubTabs', '#metaLine'].forEach((q) => $(q).classList.add('hidden'));
+  ['#listArea', '#mapView', '#fashionSubTabs', '#concertSubTabs', '#metaLine'].forEach((q) => $(q).classList.add('hidden'));
 }
 function selectTab(key) {
   S.tab = key;
@@ -244,6 +247,14 @@ function renderFashionTabs() {
   $('#platMusinsa').className = `flex-1 py-1.5 rounded-xl text-[12px] transition ${S.platform === 'musinsa' ? 'bg-[#1D1D1F] text-white font-semibold' : 'text-[#8E8E93]'}`;
   $('#platAbly').className = `flex-1 py-1.5 rounded-xl text-[12px] transition ${S.platform === 'ably' ? 'bg-[#E11D48] text-white font-semibold' : 'text-[#8E8E93]'}`;
 }
+function renderConcertTabs() {
+  const on = 'bg-white text-[#2563EB] font-semibold shadow-sm';
+  const off = 'text-[#8E8E93] hover:text-[#1D1D1F]';
+  $('#subTabKpop').className = `py-2 rounded-xl flex items-center justify-center gap-1.5 transition ${S.concertSub !== 'global' ? on : off}`;
+  $('#subTabGlobal').className = `py-2 rounded-xl flex items-center justify-center gap-1.5 transition ${S.concertSub === 'global' ? on : off}`;
+}
+$('#subTabKpop').onclick = () => { S.concertSub = 'kpop'; renderList(); loadTrends(false); };
+$('#subTabGlobal').onclick = () => { S.concertSub = 'global'; renderList(); loadTrends(false); };
 $('#subTabArtist').onclick = () => { S.fashionSub = 'artist'; renderList(); loadTrends(false); };
 $('#subTabKFashion').onclick = () => { S.fashionSub = 'kfashion'; renderList(); loadTrends(false); };
 $('#platMusinsa').onclick = () => { S.platform = 'musinsa'; renderList(); loadTrends(false); };
@@ -332,7 +343,7 @@ function relTime(iso) {
 }
 
 /* ---------------- 트렌드 로딩 ---------------- */
-const ALL_CATS = ['hotplace', 'beauty', 'fashion-artist', 'fashion-musinsa', 'fashion-ably', 'concert', 'slang'];
+const ALL_CATS = ['hotplace', 'beauty', 'fashion-artist', 'fashion-musinsa', 'fashion-ably', 'concert', 'concert-global', 'slang'];
 const trendData = (cat) => S.trends[`${cat}|${S.lang}`] || S.trends[`${cat}|ko`];
 
 /** 한 카테고리 불러오기 (같은 요청은 한 번만) */
@@ -356,7 +367,7 @@ function fetchCat(cat, lang, force) {
 function afterFetch(cat, lang) {
   if (S.lang !== lang) return;
   if (S.tab !== 'map' && catKey() === cat) renderList();
-  if ((cat === 'hotplace' || cat === 'concert')) {
+  if ((cat === 'hotplace' || cat.startsWith('concert'))) {
     if (S.tab === 'map' && S.trip) { renderLayerChips(); drawMap(false); }
     if (!$('#hotMapOverlay').classList.contains('hidden') && cat === 'hotplace') drawHotMap(false);
   }
@@ -413,6 +424,8 @@ function renderList() {
   $('#mapView').classList.add('hidden');
   area.classList.remove('hidden');
   $('#fashionSubTabs').classList.toggle('hidden', S.tab !== 'fashion');
+  $('#concertSubTabs').classList.toggle('hidden', S.tab !== 'concert');
+  if (S.tab === 'concert') renderConcertTabs();
   if (S.tab === 'fashion') renderFashionTabs();
 
   const cat = catKey();
@@ -480,7 +493,7 @@ function hotMapButtonHtml(data) {
 function cardHtml(it) {
   const st = CAT_STYLE[it.cat] || CAT_STYLE.hotplace;
   let tag = '';
-  if (it.cat === 'concert' && it.dates && it.dates.start) {
+  if (it.cat.startsWith('concert') && it.dates && it.dates.start) {
     tag = `<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-[#EAF2FF] text-[#2563EB]">${icon('calendar', 'w-3.5 h-3.5')}${esc(it.dates.start)}${it.dates.end && it.dates.end !== it.dates.start ? ' ~ ' + esc(it.dates.end) : ''}</span>`;
   } else if (it.cat === 'fashion-artist' && it.tag) {
     tag = `<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-lg bg-[#EEF0FF] text-[#4F46E5]">${icon('star', 'w-3.5 h-3.5')}By ${esc(it.tag)}</span>`;
@@ -493,9 +506,9 @@ function cardHtml(it) {
       <div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold shrink-0" style="background:${st.bg};color:${st.fg}">${it.rank}</div>
       <div class="flex-1 min-w-0">
         ${tag ? `<div class="mb-1.5">${tag}</div>` : ''}
-        <h4 class="${it.cat === 'concert' ? 'text-[20px] font-bold' : 'text-[17px] font-semibold'} tracking-tight leading-snug truncate">${esc(it.title)}</h4>
-        ${it.subtitle ? `<p class="${it.cat === 'concert' ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'} mt-0.5 truncate" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
-        ${it.cat === 'concert' && it.tag ? `<p class="text-[12px] text-[#6E6E73] mt-1 truncate flex items-center gap-1">${icon('pin', 'w-3.5 h-3.5 shrink-0')}${esc(it.tag)}</p>` : ''}
+        <h4 class="${it.cat.startsWith('concert') ? 'text-[20px] font-bold' : 'text-[17px] font-semibold'} tracking-tight leading-snug truncate">${esc(it.title)}</h4>
+        ${it.subtitle ? `<p class="${it.cat.startsWith('concert') ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'} mt-0.5 truncate" style="color:${st.fg}">${esc(it.subtitle)}</p>` : ''}
+        ${it.cat.startsWith('concert') && it.tag ? `<p class="text-[12px] text-[#6E6E73] mt-1 truncate flex items-center gap-1">${icon('pin', 'w-3.5 h-3.5 shrink-0')}${esc(it.tag)}</p>` : ''}
         <p class="text-[13px] text-[#8E8E93] font-light mt-1.5 line-clamp-2 leading-relaxed">${esc(it.desc)}</p>
         <div class="flex items-center gap-3 mt-2 text-[11px] text-[#AEAEB2]">
           <span class="inline-flex items-center gap-1">${icon('trend', 'w-3 h-3')}${esc(t('score', { n: it.score ?? '-' }))}</span>${price}
@@ -732,11 +745,11 @@ function addDetailToTrip() {
   const list = S.trip.days[day] || (S.trip.days[day] = []);
   list.push({
     name: it.original || it.title, category: it.tag || '', address: it.location.address || '',
-    type: it.cat === 'concert' ? 'spot' : 'spot', time: it.cat === 'concert' ? '18:00' : '12:00', duration: it.cat === 'concert' ? 180 : 60,
+    type: it.cat.startsWith('concert') ? 'spot' : 'spot', time: it.cat.startsWith('concert') ? '18:00' : '12:00', duration: it.cat.startsWith('concert') ? 180 : 60,
     memo: '', lat: it.location.lat, lng: it.location.lng, url: it.location.kakaoUrl || '', phone: '',
   });
   scheduleSave();
-  toast(t('toast_placeAdded', { name: it.title, day: dayLabel(day), time: it.cat === 'concert' ? '18:00' : '12:00' }), 'plus');
+  toast(t('toast_placeAdded', { name: it.title, day: dayLabel(day), time: it.cat.startsWith('concert') ? '18:00' : '12:00' }), 'plus');
 }
 
 /* ---------------- 인증 ---------------- */
@@ -1173,6 +1186,7 @@ async function refreshSavedTrips() {
 function renderMapView() {
   $('#listArea').classList.add('hidden');
   $('#fashionSubTabs').classList.add('hidden');
+  $('#concertSubTabs').classList.add('hidden');
   $('#metaLine').classList.add('hidden');
   $('#mapView').classList.remove('hidden');
   const banner = $('#sharedBanner');
@@ -1349,6 +1363,25 @@ function loadGoogleMaps() {
   });
   return gmapsPromise;
 }
+/** 카카오맵 SDK (JavaScript 키 + 카카오디벨로퍼스에 사이트 도메인 등록 필요) */
+let kakaoPromise;
+const kakaoKey = () => CFGK.KAKAO_JS_KEY || (S.config && S.config.kakaoJsKey) || '';
+function loadKakaoMaps() {
+  if (window.kakao && window.kakao.maps && window.kakao.maps.Map) return Promise.resolve();
+  if (kakaoPromise) return kakaoPromise;
+  kakaoPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(kakaoKey())}&autoload=false`;
+    s.onload = () => { try { window.kakao.maps.load(() => resolve()); } catch (e) { reject(e); } };
+    s.onerror = () => reject(new Error('kakao_load'));
+    document.head.appendChild(s);
+    setTimeout(() => reject(new Error('kakao_timeout')), 12000);
+  });
+  return kakaoPromise;
+}
+const KM = { failed: false };
+const kLevel = (zoom) => Math.max(1, Math.min(14, Math.round(19 - zoom)));
+const kLL = (p) => new kakao.maps.LatLng(p.lat, p.lng);
 const GM = { failed: false };
 const mapViews = [];
 class MapView {
@@ -1357,6 +1390,17 @@ class MapView {
   async init(center, zoom = 12) {
     if (this.obj) return;
     const el = this.el;
+    if (kakaoKey() && !KM.failed) {
+      try {
+        await loadKakaoMaps();
+        if (el._leaflet_id) el._leaflet_id = null;
+        el.innerHTML = '';
+        this.obj = new kakao.maps.Map(el, { center: kLL(center), level: kLevel(zoom) });
+        this.obj.addControl(new kakao.maps.ZoomControl(), kakao.maps.ControlPosition.RIGHT);
+        this.kind = 'kakao';
+        return;
+      } catch (e) { console.warn('카카오맵을 불러오지 못해 다른 지도로 전환', e); KM.failed = true; }
+    }
     if (S.config && S.config.googleMapsKey && !GM.failed) {
       try {
         await loadGoogleMaps();
@@ -1372,10 +1416,20 @@ class MapView {
     this.kind = 'leaflet';
   }
   clear() {
-    this.layers.forEach((l) => { if (this.kind === 'google') { if (l.setMap) l.setMap(null); else l.map = null; } else this.obj.removeLayer(l); });
+    this.layers.forEach((l) => { if (this.kind === 'kakao') l.setMap(null); else if (this.kind === 'google') { if (l.setMap) l.setMap(null); else l.map = null; } else this.obj.removeLayer(l); });
     this.layers = [];
   }
   marker({ lat, lng, html, title, z = 0, size = 32, onClick }) {
+    if (this.kind === 'kakao') {
+      const d = document.createElement('div'); d.innerHTML = html;
+      const c = d.firstElementChild || d;
+      if (title) c.title = title;
+      if (onClick) { c.style.cursor = 'pointer'; c.addEventListener('click', (e) => { e.stopPropagation(); onClick(); }); c.addEventListener('touchend', (e) => { e.stopPropagation(); }); }
+      const ov = new kakao.maps.CustomOverlay({ position: kLL({ lat, lng }), content: c, xAnchor: 0.5, yAnchor: 0.5, zIndex: 10 + z, clickable: true });
+      ov.setMap(this.obj);
+      this.layers.push(ov);
+      return ov;
+    }
     if (this.kind === 'google') {
       let mk;
       if (google.maps.marker && google.maps.marker.AdvancedMarkerElement) {
@@ -1398,6 +1452,10 @@ class MapView {
   }
   line(pts) {
     if (pts.length < 2) return;
+    if (this.kind === 'kakao') {
+      const pl = new kakao.maps.Polyline({ path: pts.map(kLL), strokeWeight: 3, strokeColor: '#1E3A8A', strokeOpacity: 0.85, strokeStyle: 'shortdash' });
+      pl.setMap(this.obj); this.layers.push(pl); return;
+    }
     if (this.kind === 'google') {
       this.layers.push(new google.maps.Polyline({ map: this.obj, path: pts, strokeOpacity: 0, icons: [{ icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, strokeColor: '#1E3A8A', scale: 2.5 }, offset: '0', repeat: '12px' }] }));
     } else {
@@ -1405,6 +1463,13 @@ class MapView {
     }
   }
   fit(pts, fallback, singleZoom = 14) {
+    if (this.kind === 'kakao') {
+      this.obj.relayout();
+      if (pts.length > 1) { const b = new kakao.maps.LatLngBounds(); pts.forEach((p) => b.extend(kLL(p))); this.obj.setBounds(b, 50, 40, 50, 40); }
+      else if (pts.length === 1) { this.obj.setLevel(kLevel(singleZoom)); this.obj.setCenter(kLL(pts[0])); }
+      else { this.obj.setLevel(kLevel(12)); this.obj.setCenter(kLL(fallback)); }
+      return;
+    }
     if (this.kind === 'google') {
       if (pts.length > 1) { const b = new google.maps.LatLngBounds(); pts.forEach((p) => b.extend(p)); this.obj.fitBounds(b, 50); }
       else if (pts.length === 1) { this.obj.setCenter(pts[0]); this.obj.setZoom(singleZoom); }
@@ -1417,10 +1482,11 @@ class MapView {
     else this.obj.setView([fallback.lat, fallback.lng], 12);
   }
   pan(p, zoom) {
+    if (this.kind === 'kakao') { if (zoom) this.obj.setLevel(kLevel(zoom)); this.obj.panTo(kLL(p)); return; }
     if (this.kind === 'google') { this.obj.panTo(p); if (zoom) this.obj.setZoom(zoom); return; }
     this.obj.setView([p.lat, p.lng], zoom || this.obj.getZoom(), { animate: true });
   }
-  resize() { if (this.kind === 'leaflet' && this.obj) this.obj.invalidateSize(); }
+  resize() { if (this.kind === 'leaflet' && this.obj) this.obj.invalidateSize(); if (this.kind === 'kakao' && this.obj) this.obj.relayout(); }
 }
 const tripView = new MapView('tripMap');
 const hotView = new MapView('hotMap');
@@ -1458,9 +1524,8 @@ function trendPois() {
     const l = it.location;
     if (l && l.lat) out.push({ layer: hotLayer(it), rank: it.rank, name: it.title, original: it.original || it.title, lat: l.lat, lng: l.lng, address: l.address || '', category: it.tag || '', url: l.kakaoUrl || '', item: it });
   });
-  const con = trendData('concert');
   const venues = new Map();
-  (con ? con.items : []).forEach((it) => {
+  ['concert', 'concert-global'].flatMap((c) => (trendData(c) ? trendData(c).items : [])).forEach((it) => {
     const l = it.location;
     if (!l || !l.lat) return;
     const k = `${l.lat.toFixed(4)},${l.lng.toFixed(4)}`;
@@ -1925,7 +1990,18 @@ async function boot() {
     features: { trends: true, ranking: true, places: true, translate: true },
   };
   if (sb) {
-    fn('config').then((c) => { S.config.features = c.features; }).catch(() => {});
+    fn('config').then((c) => {
+      S.config.features = c.features;
+      if (c.kakaoJsKey && !CFGK.KAKAO_JS_KEY) {
+        S.config.kakaoJsKey = c.kakaoJsKey;
+        // 이미 다른 지도로 그렸으면 카카오맵으로 다시 그림
+        if (mapViews.some((v) => v.kind && v.kind !== 'kakao')) {
+          mapViews.forEach((v) => { v.obj = null; v.kind = null; v.layers = []; });
+          if (S.tab === 'map' && S.trip) drawMap(true);
+          if (!$('#hotMapOverlay').classList.contains('hidden')) drawHotMap(true);
+        }
+      }
+    }).catch(() => {});
     sb.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') setTimeout(() => { showScreen('settingsScreen'); $('#setAccountBox').classList.remove('hidden'); }, 0);
       setTimeout(() => handleSession(session), 0);
