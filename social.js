@@ -536,6 +536,7 @@ function renderSettings() {
   const ms = mainStar();
   $('#setStarVal').textContent = ms ? `${ms.name} D+${fanDays(ms.fan_since)}` : '';
   $('#setLangVal').textContent = langInfo().label;
+  $('#serverVer').textContent = `서버 ${(S.config && S.config.serverVersion) || '확인 중'}`;
   const cc = (u && u.country) || localStorage.getItem('korrier_country') || '';
   $('#setCountryVal').textContent = cc ? countryName(cc) : '';
   $('#setCountry').innerHTML = countryOptions(cc, !cc);

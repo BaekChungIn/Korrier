@@ -213,6 +213,7 @@ function geminiFail(key: string, res: Response, data: any) {
   if (res.status === 429) deadModels.set(key, Date.now() + (/PerDay|per day|daily/i.test(msg) ? 3 * 3600e3 : 60e3));
   else if (res.status === 404 || res.status === 400 && /model|not found|not supported/i.test(msg)) deadModels.set(key, Date.now() + 6 * 3600e3);
   else if (res.status === 403 || res.status === 401) deadModels.set(key, Date.now() + 3600e3);
+  lastAi.gemini = `${new Date().toISOString().slice(11, 19)} ${res.status} ${msg.slice(0, 140)}`;
   return `gemini ${res.status}: ${msg.slice(0, 160)}`;
 }
 async function geminiText(prompt: string, o: { json?: boolean; temperature?: number; maxTokens?: number }) {
@@ -307,6 +308,7 @@ async function llmInner(prompt: string, { models = CFG.llmModels, json = true, t
     }
     if (round < 2) await sleep(Math.min(25, minWait) * 1000);
   }
+  lastAi.groq = `${new Date().toISOString().slice(11, 19)} ${lastErr.slice(0, 160)}`;
   throw new HttpError(429, "ai_busy");
 }
 
@@ -455,6 +457,9 @@ const COMMON_RULES = (today: string) => `
 
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
 const TREND_VER = "trend:v10:";
+/** 서버 코드 버전: 앱 설정 맨 아래와 함수 주소(브라우저로 열기)에서 확인 */
+const SERVER_VERSION = "v11";
+const lastAi: Record<string, string> = {};
 
 const PRODUCT_RULE = `
 - 반드시 "구매할 수 있는 개별 제품"만. 브랜드명과 제품명이 둘 다 있어야 합니다.
@@ -1356,7 +1361,7 @@ async function getStarFeed(name: string, lang: string, force: boolean, sub = "")
 const CORS = {
   "Access-Control-Allow-Origin": CFG.allowedOrigin,
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 const reply = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { ...CORS, "content-type": "application/json; charset=utf-8" } });
 const langOf = (l: unknown) => (typeof l === "string" && LANG_NAMES[l] ? l : "ko");
@@ -1372,6 +1377,7 @@ async function handle(req: Request) {
           google: !!(CFG.geminiKey || CFG.brightKey),
         },
         kakaoJsKey: CFG.kakaoJsKey || "",
+        version: SERVER_VERSION,
         trendTtlMin: CFG.trendTtlMin,
       };
     case "trends":
@@ -1443,6 +1449,14 @@ async function handle(req: Request) {
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  if (req.method === "GET") {
+    // 사파리로 함수 주소를 열면 서버 버전과 키 설정 상태를 확인할 수 있음(키 값은 안 보여줌)
+    return reply({
+      ok: true, version: SERVER_VERSION,
+      keys: { gemini: !!CFG.geminiKey, groq: !!CFG.llmKey, naver: HAS_NAVER, brightdata: !!CFG.brightKey, kakaoRest: !!CFG.kakaoRest, kakaoJs: !!CFG.kakaoJsKey, kopis: !!CFG.kopisKey },
+      lastAiError: lastAi,
+    });
+  }
   if (req.method !== "POST") return reply({ error: "method_not_allowed" }, 405);
   try {
     return reply(await handle(req));

@@ -2004,6 +2004,7 @@ async function boot() {
   if (sb) {
     fn('config').then((c) => {
       S.config.features = c.features;
+      S.config.serverVersion = c.version || 'old';
       if (c.kakaoJsKey && !CFGK.KAKAO_JS_KEY) {
         S.config.kakaoJsKey = c.kakaoJsKey;
         // 이미 다른 지도로 그렸으면 카카오맵으로 다시 그림
