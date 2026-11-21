@@ -177,6 +177,11 @@ async function loadFeed(name, force) {
     const st = S.stars.find((x) => x.name === name);
     const d = await fn('star_feed', { name, lang, force: !!force, sub: (st && st.sub) || '' });
     S.feeds[key] = d;
+    // 등록할 때 직업(축구선수 등)이 비어 있었으면 서버가 찾은 걸로 채워서 저장
+    if (st && !st.sub && d.sub && typeof d.sub === 'string') {
+      st.sub = d.sub.slice(0, 60);
+      sb.from('korrier_stars').update({ sub: st.sub }).eq('id', st.id).then(() => {}, () => {});
+    }
     if (d.refreshing) setTimeout(() => { if (S.feeds[key] === d) loadFeed(name); }, 45e3);
   } catch (e) {
     S.feeds[key] = prev && !prev.loading && !prev.error ? prev : { error: e };
@@ -230,6 +235,8 @@ function scheduleHtml(feed, st) {
     </div>` : '';
   const basis = feed.basis || [];
   const note = [basis.includes('espn') ? t('noteEspn') : '', basis.includes('kopis') ? t('noteKopis') : '', t('scheduleNote')].filter(Boolean).join(' · ');
+  const dg = feed.diag || {};
+  const espnMiss = dg.athlete && !basis.includes('espn') ? `<p class="text-[11px] text-[#C2410C] px-2 mt-2 flex items-start gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(t('espnFail'))} <span class="text-[#AEAEB2]">(${esc(String(dg.sports || '').slice(0, 60))})</span></span></p>` : '';
   const head = milHtml + `<div class="flex items-center justify-between px-1">
       <span class="text-[13px] font-bold text-[#3A3A3C]">${esc(t('schCount', { n: list.length }))}</span>
       <button data-s="refreshFeed" class="flex items-center gap-1 text-[12px] font-semibold text-[#E11D74] px-3 py-1.5 rounded-full bg-[#FFF0F6]">${icon('refresh', 'w-3.5 h-3.5')}${esc(t('refreshNow'))}</button>
@@ -244,7 +251,7 @@ function scheduleHtml(feed, st) {
         <span class="text-[11px] font-bold text-[#2563EB] shrink-0 max-w-[96px] text-right leading-tight">${esc(concertDateText(it))}</span></button>`).join('') : '';
   return head + (items.length ? items.join('') : `<div class="bg-white rounded-[24px] p-7 text-center"><span class="inline-flex w-12 h-12 rounded-full bg-[#F2F2F7] text-[#8E8E93] items-center justify-center">${icon('calendar', 'w-6 h-6')}</span><p class="text-[13px] text-[#8E8E93] mt-3">${esc(t('noSchedule'))}</p></div>`)
     + relHtml
-    + `<p class="text-[11px] text-[#AEAEB2] px-2 leading-relaxed flex gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(note)} · ${esc(t('updated', { t: timeAgo(feed.updatedAt) }))}</span></p>`;
+    + `<p class="text-[11px] text-[#AEAEB2] px-2 leading-relaxed flex gap-1">${icon('info', 'w-3.5 h-3.5 shrink-0 mt-[1px]')}<span>${esc(note)} · ${esc(t('updated', { t: timeAgo(feed.updatedAt) }))}</span></p>` + espnMiss;
 }
 function newsHtml(feed) {
   if (!(feed.news || []).length) return `<div class="bg-white rounded-[24px] p-7 text-center text-[13px] text-[#8E8E93]">${esc(t('noNews'))}</div>`;

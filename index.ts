@@ -459,7 +459,7 @@ const COMMON_RULES = (today: string) => `
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
 const TREND_VER = "trend:v10:";
 /** 서버 코드 버전: 앱 설정 맨 아래와 함수 주소(브라우저로 열기)에서 확인 */
-const SERVER_VERSION = "v13";
+const SERVER_VERSION = "v14";
 const lastAi: Record<string, string> = {};
 
 const PRODUCT_RULE = `
@@ -1125,7 +1125,8 @@ async function starSearch(q: string) {
     const all = (r.items || []).map((x: any) => {
       const full = stripTags(x.title);
       const m = full.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
-      return { name: (m ? m[1] : full).trim().slice(0, 40), sub: m ? m[2].trim() : "", desc: stripTags(x.description).slice(0, 160), photo: httpsOnly(x.thumbnail || ""), link: x.link || "" };
+      const desc = stripTags(x.description).slice(0, 160);
+      return { name: (m ? m[1] : full).trim().slice(0, 40), sub: m ? m[2].trim() : subFromDesc(desc), desc, photo: httpsOnly(x.thumbnail || ""), link: x.link || "" };
     }).filter((x: any) => x.name);
     const people = all.filter((x: any) => STAR_WORD.test(x.sub + " " + x.desc));
     list = (people.length ? people : all).slice(0, 10);
@@ -1168,6 +1169,39 @@ async function starPhotos(name: string) {
 }
 
 const ATHLETE = /선수|축구|야구|골프|배구|농구|피겨|수영|테니스|e스포츠|프로게이머|감독/;
+/** 백과사전 설명에서 직업 찾기: "대한민국의 축구 선수" → 축구선수 */
+function subFromDesc(d: string) {
+  const m = String(d || "").match(/(축구|야구|농구|배구|골프|테니스|수영|피겨\s?스케이팅|쇼트트랙|스피드\s?스케이팅|e스포츠|육상|탁구|배드민턴|양궁|유도|태권도|복싱|격투기)\s?(선수|감독)/);
+  if (m) return `${m[1].replace(/\s/g, "")}${m[2]}`;
+  const k = String(d || "").match(/(가수|배우|아이돌|래퍼|모델|방송인|코미디언|개그맨|개그우먼|프로게이머|유튜버)/);
+  return k ? k[1] : "";
+}
+const SPORT_NEWS = /골|득점|도움|어시스트|선발|출전|시즌|리그|감독|이적|홈런|타율|투수|타석|승리|패배|무승부|플레이오프|MLS|EPL|챔피언스|A매치|대표팀|경기/;
+/** 스타를 등록할 때 직업이 비어 있었으면: 백과사전 → 뉴스(대부분 경기 기사면 운동선수) 순서로 채움 */
+async function inferSub(name: string, titles: string[]): Promise<string> {
+  const ck = `sub:v1:${hashId(name)}`;
+  const hit = (await cacheGet(ck).catch(() => null))?.data;
+  if (hit?.sub && Date.now() - Date.parse(hit.at) < 7 * 86400e3) return hit.sub;
+  let sub = "";
+  const key = name.replace(/\s/g, "");
+  try {
+    const r = await naverSearch("encyc", name, { display: 10 });
+    for (const x of r.items || []) {
+      const full = stripTags(x.title), desc = stripTags(x.description);
+      const m = full.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
+      if ((m ? m[1] : full).replace(/\s/g, "") !== key) continue;
+      sub = (m && STAR_WORD.test(m[2]) ? m[2].trim() : "") || subFromDesc(desc) || (m ? m[2].trim() : "");
+      if (sub) break;
+    }
+  } catch { /* 백과사전을 아직 안 켰으면 뉴스로 */ }
+  if (!sub || !STAR_WORD.test(sub + " 선수 가수 배우")) {
+    const n = titles.filter((t) => SPORT_NEWS.test(t)).length;
+    if (titles.length >= 8 && n >= Math.ceil(titles.length * 0.4)) sub = "운동선수";
+  }
+  sub = sub.slice(0, 60);
+  if (sub) await cacheSet(ck, { sub, at: new Date().toISOString() }).catch(() => {});
+  return sub;
+}
 const ACTOR = /배우|탤런트|연기자|actor|actress/i;
 function starQueries(name: string, sub: string) {
   const common = ["일정", "출연 예정", "방송 출연", "유튜브 출연", "예능 출연", "행사 참석"];
@@ -1374,9 +1408,9 @@ async function onRoster(sport: string, slug: string, teamId: string, nameEn: str
 }
 /** 최근 기사로 지금 소속팀 확인 (AI는 기사 내용을 정리만) */
 async function resolveAthlete(name: string, sub: string, srcs: Src[]) {
-  const ck = `athlete:v1:${hashId(name)}`;
+  const ck = `athlete:v2:${hashId(name)}`;
   const hit = (await cacheGet(ck).catch(() => null))?.data;
-  if (hit && Date.now() - Date.parse(hit.at) < 3 * 86400e3) return hit.info;
+  if (hit && Date.now() - Date.parse(hit.at) < 6 * 3600e3) return hit.info; // AI 추측은 6시간만 (확인된 팀은 따로 7일 저장)
   const r = await naverSearch("news", `${name} 소속팀`, { display: 20, sort: "date" }).catch(() => ({ items: [] }));
   const lines = [...(r.items || []).map((x: any) => `${stripTags(x.title)} — ${stripTags(x.description).slice(0, 110)}`), ...srcs.slice(0, 12).map((s) => s.text.slice(0, 150))].slice(0, 28);
   const o = parseJsonLoose(await llm(`"${name}"${sub ? `(${sub})` : ""} 선수의 지금 소속팀을 아래 최근 기사로 판단하세요. 기억보다 기사가 우선이고, 이적 기사가 있으면 새 팀입니다.
@@ -1410,11 +1444,24 @@ ${JSON.stringify(need)}`, { maxTokens: 1500, temperature: 0 }));
   }
   return dict;
 }
+const TEAM_ALIAS: Record<string, string[]> = { losangeles: ["LAFC"], lafc: ["LAFC"], parissaintgermain: ["PSG", "Paris SG"], bayernmunich: ["Bayern Munich", "Bayern"], wolverhamptonwanderers: ["Wolves", "Wolverhampton"], tottenhamhotspur: ["Tottenham", "Spurs"] };
 async function sportsSchedule(name: string, sub: string, srcs: Src[]): Promise<{ ok: boolean; items: any[]; team?: string; why?: string }> {
-  let info: any;
-  try { info = await resolveAthlete(name, sub, srcs); } catch (e) { return { ok: false, items: [], why: "ai:" + (e as Error).message }; }
-  const sport = info?.sport;
-  if (!SPORT_LEAGUES[sport] || !info.teamEn) return { ok: false, items: [], why: "no_team" };
+  // 한 번 ESPN으로 확인된 팀은 7일 동안 AI 없이 바로 사용
+  const known = (await cacheGet(`athteam:v1:${hashId(name)}`).catch(() => null))?.data;
+  let info: any = null, sport = "", team: any = null, slug = "";
+  if (known && Date.now() - Date.parse(known.at) < 7 * 86400e3) { sport = known.sport; slug = known.slug; team = known.team; info = known.info || null; }
+  else {
+    try { info = await resolveAthlete(name, sub, srcs); } catch (e) { return { ok: false, items: [], why: "ai:" + (e as Error).message }; }
+    sport = info?.sport;
+    if (!SPORT_LEAGUES[sport] || !info.teamEn) return { ok: false, items: [], why: `no_team:${info?.sport || "?"}` };
+    const r = await findAthleteTeam(name, info);
+    if (!r.team) return { ok: false, items: [], why: r.why };
+    team = r.team; slug = r.slug;
+  }
+  return await teamFixtures(sport, slug, team, info);
+}
+async function findAthleteTeam(name: string, info: any): Promise<{ team: any; slug: string; why: string }> {
+  const sport = info.sport;
   const mapped = LEAGUE_SLUG.find(([re]) => re.test(`${info.league} ${info.leagueSlug}`));
   const slugs = [...new Set([
     ...(/^[a-z]{2,8}(\.[a-z0-9_.]{1,16})?$/.test(info.leagueSlug) ? [info.leagueSlug] : []),
@@ -1422,15 +1469,28 @@ async function sportsSchedule(name: string, sub: string, srcs: Src[]): Promise<{
     ...SPORT_LEAGUES[sport],
   ])];
   let team: any = null, slug = "";
+  const leagueTeams = async (s: string) => ((await espnJson(`${sport}/${s}/teams?limit=200`, 7 * 24 * 60).catch(() => null))?.sports?.[0]?.leagues?.[0]?.teams || []).map((x: any) => x?.team).filter(Boolean);
+  // ① 팀 이름으로 찾고, 그 팀 명단에 선수가 있는지 확인
   for (const s of slugs) {
-    const j = await espnJson(`${sport}/${s}/teams?limit=200`, 7 * 24 * 60).catch(() => null);
-    const teams = (j?.sports?.[0]?.leagues?.[0]?.teams || []).map((x: any) => x?.team).filter(Boolean);
-    const t = findTeam(teams, [info.teamEn, info.teamKo]);
+    const t = findTeam(await leagueTeams(s), [info.teamEn, info.teamKo, ...(TEAM_ALIAS[teamNorm(info.teamEn)] || [])]);
     if (!t) continue;
     if ((await onRoster(sport, s, String(t.id), info.nameEn)) === false) continue; // 그 팀 명단에 없으면 다른 리그도 확인
     team = t; slug = s; break;
   }
-  if (!team) return { ok: false, items: [], why: "team_not_found" };
+  // ② 팀 이름이 안 맞으면(예: Los Angeles FC ↔ LAFC) 그 리그 모든 팀 명단에서 선수 이름으로 찾기
+  if (!team && info.nameEn) {
+    for (const s of slugs.slice(0, 2)) {
+      const teams = await leagueTeams(s);
+      let hitT: any = null;
+      await mapLimit(teams.slice(0, 40), 6, async (t: any) => { if (!hitT && (await onRoster(sport, s, String(t.id), info.nameEn)) === true) hitT = t; });
+      if (hitT) { team = hitT; slug = s; break; }
+    }
+  }
+  if (!team) return { team: null, slug: "", why: `team_not_found:${info.teamEn || "?"}/${info.leagueSlug || info.league || "?"}` };
+  await cacheSet(`athteam:v1:${hashId(name)}`, { sport, slug, team: { id: String(team.id), displayName: team.displayName }, info: { nameEn: info.nameEn, national: info.national, nationalEn: info.nationalEn }, at: new Date().toISOString() }).catch(() => {});
+  return { team, slug, why: "" };
+}
+async function teamFixtures(sport: string, slug: string, team: any, info: any): Promise<{ ok: boolean; items: any[]; team?: string; why?: string }> {
   const from = seoulDate().replace(/-/g, ""), to = seoulDate(75).replace(/-/g, "");
   const evs = new Map<string, { e: any; lg: any }>();
   const take = (j: any, keep: (cs: any[]) => boolean) => {
@@ -1445,7 +1505,7 @@ async function sportsSchedule(name: string, sub: string, srcs: Src[]): Promise<{
     take(await espnJson(`${sport}/${c}/scoreboard?dates=${from}-${to}&limit=500`).catch(() => null), mine);
   });
   take(await espnJson(`${sport}/${slug}/teams/${team.id}/schedule${sport === "soccer" ? "?fixture=true" : ""}`).catch(() => null), mine);
-  if (sport === "soccer" && info.national && info.nationalEn) {
+  if (sport === "soccer" && info?.national && info?.nationalEn) {
     const nk = teamNorm(info.nationalEn);
     await mapLimit(NATIONAL_COMPS, 3, async (c) => {
       take(await espnJson(`soccer/${c}/scoreboard?dates=${from}-${to}&limit=500`).catch(() => null), (cs) => cs.some((x: any) => teamNorm(x?.team?.displayName) === nk || teamNorm(x?.team?.location) === nk));
@@ -1484,7 +1544,7 @@ async function sportsSchedule(name: string, sub: string, srcs: Src[]): Promise<{
   return { ok: true, items, team: String(team.displayName || "") };
 }
 
-const STAR_VER = "star:v5:";
+const STAR_VER = "star:v6:";
 async function buildStarFeed(name: string, sub = "") {
   const since = Date.now() - 60 * 86400e3;
   const queries = starQueries(name, sub);
@@ -1503,6 +1563,9 @@ async function buildStarFeed(name: string, sub = "") {
   const photos = (photoR.items || []).map((x: any) => ({ thumb: httpsOnly(x.thumbnail || ""), full: httpsOnly(x.link || "") })).filter((x: any) => x.thumb).slice(0, 12);
 
   const today = seoulDate();
+  const knownJob = /선수|축구|야구|골프|배구|농구|피겨|수영|테니스|감독|가수|배우|탤런트|아이돌|그룹|래퍼|모델|방송인|코미디언|개그|MC|유튜버|프로게이머/;
+  const subUsed = knownJob.test(sub) ? sub : (await inferSub(name, news.map((n: any) => n.title)).catch(() => "")) || sub;
+  sub = subUsed;
   const athlete = ATHLETE.test(sub);
   const isD = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
   const basis: string[] = [];
@@ -1611,7 +1674,8 @@ ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 90)}`)
   const sportsWhy = athlete && !espnOk ? (sports as any).why || "" : "";
   if (sportsWhy) console.warn("[star sports]", name, sportsWhy);
   return {
-    name, news, photos, schedule, status, basis: [...new Set(basis)], dropped,
+    name, news, photos, schedule, status, basis: [...new Set(basis)], dropped, sub,
+    diag: { athlete, sports: athlete ? (espnOk ? `ok:${(sports as any).team || ""}` : sportsWhy) : "", ai: aiFailed ? "fail" : "ok", pool: pool.length, pages: pageTexts.length },
     partial: aiFailed || (athlete && !espnOk && /^ai:/.test(sportsWhy)), updatedAt: new Date().toISOString(),
   };
 }

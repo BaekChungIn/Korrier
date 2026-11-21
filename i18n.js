@@ -288,6 +288,7 @@ window.I18N = {
   milServing: ['군 복무 중', 'In military service', '兵役中', '服兵役中', 'En servicio militar', 'En service militaire', 'กำลังรับราชการทหาร'],
   milUntil: ['{date} 전역 예정', 'Discharge on {date}', '{date} 除隊予定', '预计 {date} 退伍', 'Termina el {date}', 'Libéré le {date}', 'ปลดประจำการ {date}'],
   timeTBD: ['미정', 'TBD', '未定', '待定', 'TBD', 'TBD', 'TBD'],
+  espnFail: ['경기 일정표(ESPN)에서 소속팀을 아직 못 찾았어요. 잠시 뒤 다시 검색해 보세요', 'Couldn’t find the team on ESPN fixtures yet. Try refreshing later', 'ESPNの試合日程でチームがまだ見つかりません。後でもう一度お試しください', '暂未在ESPN赛程中找到球队，请稍后刷新', 'Aún no se encontró el equipo en ESPN. Actualiza más tarde', 'Équipe introuvable sur ESPN pour l’instant. Réessayez plus tard', 'ยังหาทีมใน ESPN ไม่เจอ ลองรีเฟรชภายหลัง'],
   ongoing: ['진행 중', 'Ongoing', '開催中', '进行中', 'En curso', 'En cours', 'กำลังจัด'],
   dateTBA: ['날짜 미정', 'Date TBA', '日程未定', '日期待定', 'Fecha por confirmar', 'Date à confirmer', 'รอประกาศวันที่'],
   inMonth: ['{m} 중', 'Sometime in {m}', '{m}中', '{m}内', 'En {m}', 'En {m}', 'ภายใน{m}'],
