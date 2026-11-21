@@ -29,6 +29,7 @@ const CFG = {
   googleTranslateKey: env("GOOGLE_TRANSLATE_API_KEY"),
   xBearer: env("X_BEARER_TOKEN"),
   kopisKey: env("KOPIS_API_KEY"),
+  seoulKey: env("SEOUL_API_KEY"),          // 서울 열린데이터광장: 서울시 실시간 인구데이터
   // Gemini(1순위 AI) + 구글 검색 연동(Grounding). 없거나 한도가 차면 Groq로 자동 전환
   geminiKey: env("GEMINI_API_KEY"),
   geminiModels: (env("GEMINI_MODELS") || "gemini-2.5-flash,gemini-2.5-flash-lite").split(",").map((x: string) => x.trim()).filter(Boolean),
@@ -458,7 +459,7 @@ const COMMON_RULES = (today: string) => `
 /** 규칙이 바뀌면 숫자를 올려서, 예전 서버가 만든 순위(매장·비K팝 공연 섞인 것)를 바로 버린다 */
 const TREND_VER = "trend:v10:";
 /** 서버 코드 버전: 앱 설정 맨 아래와 함수 주소(브라우저로 열기)에서 확인 */
-const SERVER_VERSION = "v11";
+const SERVER_VERSION = "v12";
 const lastAi: Record<string, string> = {};
 
 const PRODUCT_RULE = `
@@ -1005,7 +1006,18 @@ async function rebuild(cat: string) {
   const key = `${TREND_VER}${cat}`;
   if (!(await tryLock(key))) return false;
   try {
+    const prev = (await cacheGet(key).catch(() => null))?.data;
     const base = await buildTrends(cat);
+    // 지난번 순위와 비교해서 몇 계단 올랐는지/내렸는지
+    if (prev?.items?.length) {
+      const byId = new Map(prev.items.map((x: any) => [x.id, x.rank]));
+      const byName = new Map(prev.items.map((x: any) => [normName(x.title + (cat.startsWith("concert") ? "" : x.subtitle || "")), x.rank]));
+      base.items.forEach((it: any) => {
+        const r = byId.get(it.id) ?? byName.get(normName(it.title + (cat.startsWith("concert") ? "" : it.subtitle || "")));
+        it.prevRank = r ?? null;
+      });
+      (base as any).prevAt = prev.updatedAt;
+    }
     await cacheSet(key, base);
     return true;
   } catch (e) {
@@ -1204,6 +1216,7 @@ function ruleSchedule(name: string, pool: any[], today: string) {
   }
   return out;
 }
+const normText = (t: string) => String(t || "").toLowerCase().replace(/[\s"'“”‘’·.,:()\[\]-]/g, "");
 /** 일정 이름을 짧게: 기사식 따옴표·말줄임·괄호 설명 제거 */
 function shortTitle(t: string) {
   let x = String(t || "").replace(/\s+/g, " ").trim();
@@ -1259,51 +1272,67 @@ async function buildStarFeed(name: string, sub = "") {
     }));
 
   // 1) 구글 검색(Bright Data): 일정 정리 사이트·경기 일정표 찾기
-  const gQueries = athlete ? [`${name} 다음 경기 일정`, `${name} 경기 일정`, `${name} 일정`] : [`${name} 일정 스케줄`, `${name} 팬사인회 콘서트 일정`, `${name} 방송 출연 일정`];
+  const gQueries = athlete ? [`${name} 다음 경기 일정`, `${name} 경기 일정 상대팀`, `${name} 소속팀 경기 일정 한국시간`] : [`${name} 일정 스케줄`, `${name} 팬사인회 콘서트 일정`, `${name} 방송 출연 일정`];
   const google = (await Promise.all(gQueries.map((q) => brightSearch(q, 10)))).flat();
   const gSnips = google.map((x) => ({ title: x.t, desc: x.d, link: x.link, date: today }));
   // 2) 일정이 정리된 페이지를 직접 열어서 날짜·시간이 있는 줄만 가져옴
-  const pageCands = [...new Map(google.filter((x) => /일정|스케줄|schedule|fixture|경기|캘린더|calendar/i.test(x.t + x.d) && isHttpUrl(x.link)).map((x) => [x.link, x])).values()].slice(0, 4);
+  const pageCands = [...new Map(google.filter((x) => /일정|스케줄|schedule|fixture|경기|캘린더|calendar|대진/i.test(x.t + x.d) && isHttpUrl(x.link)).map((x) => [x.link, x])).values()].slice(0, 5);
   const [pages, gr] = await Promise.all([
-    Promise.all(pageCands.map(async (x) => ({ url: x.link, title: x.t, text: await pageText(x.link, 3000) }))),
-    // 3) Gemini 구글 검색 연동
-    geminiSearch(`오늘은 ${today}입니다. 구글 검색으로 "${name}"${sub ? `(${sub})` : ""}의 오늘 이후 일정을 빠짐없이 찾아주세요.
-${athlete ? "소속팀·대표팀의 다음 경기(상대팀·날짜·한국 시간·경기장), 방송·광고·행사" : "콘서트·투어, 팬미팅·팬사인회, 컴백·발매, 음악방송·무대, 예능·라디오·유튜브 출연, 대학 축제·페스티벌, 패션쇼·화보, 시상식, 드라마·영화"}.
-날짜가 확인된 것만. 지난 일정 제외.
-title은 15자 안팎의 짧은 일정 이름(예: "LAFC vs 시애틀", "팬사인회 (MAKESTAR)", "인기가요 출연", "단독 콘서트 RESCENE"). 기사 제목 금지.
+    Promise.all(pageCands.map(async (x) => ({ url: x.link, title: x.t, text: await pageText(x.link, 2800) }))),
+    // 3) Gemini 구글 검색 연동(참고용, 다른 자료로 확인된 것만 사용)
+    geminiSearch(`오늘은 ${today}입니다. 구글 검색으로 "${name}"${sub ? `(${sub})` : ""}의 오늘 이후 일정을 찾아주세요.
+${athlete ? "소속팀·대표팀의 다음 경기(우리팀 vs 상대팀·날짜·한국 시간·경기장)" : "콘서트·투어, 팬미팅·팬사인회, 컴백·발매, 음악방송·무대, 예능·라디오·유튜브 출연, 축제, 패션쇼·화보, 시상식, 드라마·영화"}.
+확인된 것만. 지난 일정 제외. title은 짧게(경기는 "LAFC vs 인터 마이애미" 형식).
 JSON 하나만: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"${SCH_TYPES.join("|")}","title":"","place":""}]}`, 3000).catch(() => null),
   ]);
   const pageTexts = pages.filter((p) => p.text.length > 80);
   const pool = [...gSnips, ...schedSnips, ...news.filter((n) => !schedSnips.some((s) => s.link === n.link))].slice(0, 70);
+  // 검증용: 모든 자료 원문(공백 제거)
+  const corpus = normText([...pageTexts.map((p) => p.text), ...pool.map((x) => `${x.title} ${x.desc}`)].join("\n"));
+  const mdForms = (d: string) => { const [, m, dd] = d.split("-").map(Number); return [`${m}월${dd}일`, `${m}.${dd}`, `${String(m).padStart(2, "0")}.${String(dd).padStart(2, "0")}`, `${m}/${dd}`]; };
+  const supported = (x: any) => {
+    // AI가 옮긴 근거 문장이 실제 자료에 있거나, 날짜와 핵심 단어(상대팀 등)가 자료에 함께 나오면 통과
+    if (x.evidence && corpus.includes(normText(String(x.evidence)).slice(0, 40))) return true;
+    const words = String(x.title).split(/\s|vs|·|\(|\)/i).map((w) => normText(w)).filter((w) => w.length >= 2 && !/^(경기|출연|발매|콘서트|팬미팅|팬사인회|방송|공개|시작)$/.test(w));
+    return mdForms(x.date).some((f) => corpus.includes(normText(f))) && words.some((w) => corpus.includes(w));
+  };
 
   let schedule: any[] = [];
   let aiFailed = false;
-  if (gr) schedule = clean(parseJsonLoose(gr.text)?.schedule, (_x, i) => gr.sources[i % Math.max(1, gr.sources.length)]?.uri || "");
-
-  // 4) AI 정리: 일정 페이지 내용 + 뉴스·검색 요약
+  // 4) AI 정리: 자료에 있는 것만, 근거 문장과 함께
   if ((pageTexts.length || pool.length) && (CFG.llmKey || CFG.geminiKey)) {
     const prompt = `오늘은 ${today}(한국 시간)입니다. "${name}"${sub ? `(${sub})` : ""}의 일정표를 만듭니다.
-아래 [페이지]는 구글에서 찾은 일정 정리 페이지의 내용이고, [자료]는 최근 검색 결과·뉴스입니다.
-"${name}" 본인(또는 소속 그룹·팀)의 오늘 이후 일정을 빠짐없이 모두 뽑으세요. 페이지의 일정은 전부 옮기세요.
-type: match(경기) concert(콘서트·투어) fanmeeting(팬미팅·팬사인회·영통팬싸) comeback(컴백·발매) release(드라마·영화 공개) broadcast(TV·라디오·예능) youtube(유튜브·웹예능·자체콘텐츠) stage(음악방송·무대) festival(축제·페스티벌) fashion(패션쇼·화보) event(시상식·행사·광고·기념일) ticket(티켓 오픈)
+아래 [페이지]는 구글에서 찾은 일정 정리 페이지 내용, [자료]는 최근 검색 결과·뉴스입니다.
+"${name}" 본인(또는 소속 그룹·팀)의 오늘 이후 일정을 자료에서 빠짐없이 뽑으세요. 페이지에 있는 일정은 전부 옮기세요.
+type: match(경기) concert(콘서트·투어) fanmeeting(팬미팅·팬사인회·영통팬싸) comeback(컴백·발매) release(드라마·영화 공개) broadcast(TV·라디오·예능) youtube(유튜브·웹예능·자체콘텐츠) stage(음악방송·무대) festival(축제·페스티벌) fashion(패션쇼·화보) event(시상식·행사·광고) ticket(티켓 오픈)
 규칙:
-- title은 15자 안팎의 짧은 일정 이름. 기사 제목·감탄문 금지. 예: "LAFC vs 시애틀", "팬사인회 (MAKESTAR)", "인기가요 출연", "2027 시즌그리팅 발매", "MAMA 레드카펫"
-- 경기는 "우리팀 vs 상대팀" 형식, 시간은 한국 시간.
-- 날짜를 확실히 알 수 있는 것만. 지난 일정·추측·다른 사람 일정은 제외. 같은 일정은 하나로.
-JSON 하나만: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"","title":"","place":"장소·방송사·채널 또는 빈 문자열","src":"p번호 또는 자료 번호"}]}
+- title은 15자 안팎의 짧은 이름. 기사 제목 금지. 예: "팬사인회 (MAKESTAR)", "인기가요 출연", "2027 시즌그리팅 발매"
+- 경기(match)는 반드시 "팀 vs 팀" 형식(홈팀 vs 원정팀, 예: "LAFC vs 세인트루이스"), place는 경기장, 시간은 한국 시간. 대회·라운드는 place 뒤에 붙이지 말고 title 끝 괄호에(예: "세인트루이스 vs LAFC (PO 1차전)").
+- evidence에는 그 일정의 날짜가 적힌 자료 문장을 원문 그대로 짧게(30자 이내) 복사하세요.
+- 날짜를 자료에서 확실히 알 수 있는 것만. 지난 일정·추측·다른 사람 일정·조건부("~할 경우") 일정은 제외.
+JSON 하나만: {"schedule":[{"date":"YYYY-MM-DD","endDate":"","time":"HH:MM 또는 빈 문자열","type":"","title":"","place":"","src":"p번호 또는 자료 번호","evidence":""}]}
 ${pageTexts.map((p, i) => `[페이지 p${i}] ${p.title}\n${p.text}`).join("\n\n")}
 
 [자료]
 ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 70)}`).join("\n")}`;
     try {
-      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 5000, temperature: 0.1 }));
-      const ai = clean(obj?.schedule, (x) => { const m = String(x.src || "").match(/^p(\d+)$/); return m ? pageTexts[Number(m[1])]?.url || "" : pool[Number(x.src)]?.link || ""; });
-      schedule = [...schedule, ...ai];
+      const obj = parseJsonLoose(await llm(prompt, { maxTokens: 5000, temperature: 0 }));
+      const raw = Array.isArray(obj?.schedule) ? obj.schedule : [];
+      const ok = raw.filter(supported);
+      schedule = clean(ok, (x) => { const m = String(x.src || "").match(/^p(\d+)$/); return m ? pageTexts[Number(m[1])]?.url || "" : pool[Number(x.src)]?.link || ""; });
     } catch (e) { console.warn("[star schedule]", (e as Error).message); aiFailed = true; }
   } else aiFailed = true;
-
-  // 5) AI가 전혀 안 될 때만: 기사에서 날짜를 직접 찾아 짧은 이름으로
-  if (!schedule.length && aiFailed) schedule = ruleSchedule(name, pool, today);
+  // 구글 검색 연동 결과는 다른 자료로 확인된 것만 추가
+  if (gr) {
+    const g = (parseJsonLoose(gr.text)?.schedule || []).filter(supported);
+    schedule = [...schedule, ...clean(g, (_x, i) => gr.sources[i % Math.max(1, gr.sources.length)]?.uri || "")];
+  }
+  // 경기는 "팀 vs 팀" 형식만
+  schedule = schedule.filter((x: any) => x.type !== "match" || /\svs\.?\s/i.test(x.title));
+  // 5) 이전에 확인된 일정은 유지(검색할 때마다 결과가 들쭉날쭉하지 않게). 같은 날 같은 경기는 새 결과로 교체
+  const prevFeed = (await cacheGet(`star:v4:${hashId(name)}`).catch(() => null))?.data;
+  const prevKeep = (prevFeed?.schedule || []).filter((x: any) => (x.endDate || x.date) >= today && !(x.type === "match" && schedule.some((n: any) => n.type === "match" && n.date === x.date)));
+  schedule = [...schedule, ...prevKeep];
 
   // 6) 공연예술통합전산망(KOPIS)에 등록된 이 스타의 공연
   let kop: any[] = [];
@@ -1315,7 +1344,7 @@ ${pool.map((x, i) => `[${i}] (${x.date}) ${x.title} — ${x.desc.slice(0, 70)}`)
     kop = rows.filter((c: any) => nn.length > 1 && (normName(c.artist).includes(nn) || nn.includes(normName(c.artist)) && normName(c.artist).length > 1) && (c.endDate || c.startDate) >= today)
       .map((c: any) => ({ date: c.startDate < today ? today : c.startDate, endDate: c.endDate && c.endDate !== c.startDate ? c.endDate : "", time: "", type: /팬미팅|FAN/i.test(c.title) ? "fanmeeting" : "concert", title: shortTitle(c.title), place: c.venue, link: c.sourceUrl }));
   }
-  // 같은 날·같은 시간·비슷한 이름은 하나로
+  // 같은 날·같은 시간·비슷한 이름은 하나로 (날짜·시간순)
   const seenK = new Set<string>();
   schedule = [...kop, ...schedule]
     .filter((x: any) => { const k = `${x.date}|${x.time}|${normName(x.title).slice(0, 6)}`; if (seenK.has(k)) return false; seenK.add(k); return true; })
@@ -1355,6 +1384,46 @@ async function getStarFeed(name: string, lang: string, force: boolean, sub = "")
     } catch { /* 원문 */ }
   }
   return { ...out, refreshing };
+}
+
+/* ---------------- 서울시 실시간 인구데이터 (주요 121장소 혼잡도) ---------------- */
+const CROWD_LEVEL: Record<string, number> = { "붐빔": 4, "약간 붐빔": 3, "보통": 2, "여유": 1 };
+async function buildCrowd() {
+  const codes = Array.from({ length: 128 }, (_, i) => `POI${String(i + 1).padStart(3, "0")}`);
+  const locCache = (await cacheGet("crowd:loc:v1").catch(() => null))?.data || {};
+  let stop = false;
+  const rows = await mapLimit(codes, 6, async (code) => {
+    if (stop) return null;
+    const r = await fetch(`http://openapi.seoul.go.kr:8088/${enc(CFG.seoulKey)}/json/citydata_ppltn/1/5/${code}`, { signal: AbortSignal.timeout(10000) }).catch(() => null);
+    if (!r || !r.ok) return null;
+    const j: any = await r.json().catch(() => null);
+    const d = j?.["SeoulRtd.citydata_ppltn"]?.[0];
+    const res = j?.RESULT || j?.["SeoulRtd.citydata_ppltn"]?.RESULT;
+    if (!d) { if (res && /ERROR-33[0-9]|INFO-100/.test(JSON.stringify(res))) stop = true; return null; }
+    let loc = locCache[code];
+    if (!loc && CFG.kakaoRest) {
+      const p = await kakaoFirstPlace(String(d.AREA_NM).replace(/·/g, " ")).catch(() => null);
+      if (p) { loc = { lat: p.lat, lng: p.lng }; locCache[code] = loc; }
+    }
+    return {
+      code, name: d.AREA_NM, level: d.AREA_CONGEST_LVL || "", score: CROWD_LEVEL[d.AREA_CONGEST_LVL] || 0,
+      msg: String(d.AREA_CONGEST_MSG || "").slice(0, 160), min: Number(d.AREA_PPLTN_MIN) || 0, max: Number(d.AREA_PPLTN_MAX) || 0,
+      time: d.PPLTN_TIME || "", lat: loc?.lat || null, lng: loc?.lng || null,
+    };
+  });
+  cacheSet("crowd:loc:v1", locCache).catch(() => {});
+  const places = rows.filter(Boolean).sort((a: any, b: any) => b.score - a.score || b.max - a.max);
+  return { places, updatedAt: new Date().toISOString() };
+}
+async function getCrowd() {
+  if (!CFG.seoulKey) return { places: [], disabled: true };
+  const key = "crowd:v1";
+  let base = (await cacheGet(key))?.data || null;
+  const age = base ? Date.now() - Date.parse(base.updatedAt) : Infinity;
+  const build = async () => { if (!(await tryLock(key))) return; try { await cacheSet(key, await buildCrowd()); } catch (e) { await unlock(key); throw e; } };
+  if (!base) { await build(); base = (await cacheGet(key))?.data || { places: [] }; }
+  else if (age > 3 * 3600e3) background(build());
+  return base;
 }
 
 /* ---------------- 요청 처리 ---------------- */
@@ -1419,6 +1488,8 @@ async function handle(req: Request) {
       if (!HAS_NAVER) throw new HttpError(503, "naver_missing");
       return getStarFeed(name, langOf(body.lang), body.force === true, String(body.sub || "").slice(0, 60));
     }
+    case "crowd":
+      return getCrowd();
     case "places": {
       const q = String(body.q || "").trim();
       if (!q) return { places: [] };
@@ -1453,7 +1524,7 @@ Deno.serve(async (req: Request) => {
     // 사파리로 함수 주소를 열면 서버 버전과 키 설정 상태를 확인할 수 있음(키 값은 안 보여줌)
     return reply({
       ok: true, version: SERVER_VERSION,
-      keys: { gemini: !!CFG.geminiKey, groq: !!CFG.llmKey, naver: HAS_NAVER, brightdata: !!CFG.brightKey, kakaoRest: !!CFG.kakaoRest, kakaoJs: !!CFG.kakaoJsKey, kopis: !!CFG.kopisKey },
+      keys: { seoul: !!CFG.seoulKey, gemini: !!CFG.geminiKey, groq: !!CFG.llmKey, naver: HAS_NAVER, brightdata: !!CFG.brightKey, kakaoRest: !!CFG.kakaoRest, kakaoJs: !!CFG.kakaoJsKey, kopis: !!CFG.kopisKey },
       lastAiError: lastAi,
     });
   }

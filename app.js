@@ -502,6 +502,15 @@ function hotMapButtonHtml(data) {
   </button>`;
 }
 
+/** 지난번 순위와 비교: ▲3계단 상승 / ▼2계단 하락 / NEW / 변동 없음 */
+function rankDeltaHtml(it, compact) {
+  if (it.prevRank === undefined) return '';
+  if (it.prevRank === null) return `<span class="inline-flex items-center gap-0.5 text-[10px] font-black text-[#2563EB]">NEW</span>`;
+  const d = it.prevRank - it.rank;
+  if (d === 0) return `<span class="inline-flex items-center text-[10px] font-bold text-[#AEAEB2]" title="${esc(t('rankSame'))}">—</span>`;
+  const up = d > 0;
+  return `<span class="inline-flex items-center gap-0.5 text-[10px] font-bold ${up ? 'text-[#E5484D]' : 'text-[#2563EB]'}" title="${esc(t(up ? 'rankUp' : 'rankDown', { n: Math.abs(d) }))}">${icon(up ? 'arrowUp' : 'arrowDown', 'w-3 h-3', 2.6)}${Math.abs(d)}${compact ? '' : `<span class="font-medium ml-0.5">${esc(t(up ? 'rankUpShort' : 'rankDownShort'))}</span>`}</span>`;
+}
 function cardHtml(it) {
   const st = CAT_STYLE[it.cat] || CAT_STYLE.hotplace;
   let tag = '';
@@ -515,7 +524,7 @@ function cardHtml(it) {
   const price = it.shop && it.shop.lowPrice ? `<span class="inline-flex items-center gap-1">${icon('store', 'w-3 h-3')}${esc(t('lowestPrice'))} ${it.shop.lowPrice.toLocaleString()}₩</span>` : '';
   return `<button data-item="${esc(it.id)}" class="w-full text-left bg-white rounded-[28px] p-5 shadow-[0_2px_14px_rgba(0,0,0,0.03)] border border-black/[0.03] hover:shadow-[0_8px_24px_rgba(0,0,0,0.06)] transition-all active:scale-[0.99]">
     <div class="flex items-start gap-4">
-      <div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold shrink-0" style="background:${st.bg};color:${st.fg}">${it.rank}</div>
+      <div class="w-11 shrink-0 flex flex-col items-center gap-1"><div class="w-11 h-11 rounded-[16px] flex items-center justify-center text-[17px] font-semibold" style="background:${st.bg};color:${st.fg}">${it.rank}</div>${rankDeltaHtml(it, true)}</div>
       <div class="flex-1 min-w-0">
         ${tag ? `<div class="mb-1.5">${tag}</div>` : ''}
         <h4 class="${it.cat.startsWith('concert') ? 'text-[20px] font-bold' : 'text-[17px] font-semibold'} tracking-tight leading-snug truncate">${esc(it.title)}</h4>
@@ -536,7 +545,7 @@ function slangHtml(items) {
     const s = it.slang || {};
     const line = S.lang === 'ko' ? s.meaning : [s.pron, s.meaning ? `(${s.meaning})` : ''].filter(Boolean).join(' ');
     return `<article class="snap-center shrink-0 w-full bg-white rounded-[40px] px-7 pt-8 pb-7 border border-black/[0.04] shadow-[0_2px_18px_rgba(0,0,0,0.04)]">
-      <span class="inline-block px-4 py-1.5 rounded-full bg-[#EAF7EC] text-[#5CB85F] text-[14px] font-medium">${esc(t('rank', { n: it.rank }))}</span>
+      <span class="inline-flex items-center gap-2"><span class="inline-block px-4 py-1.5 rounded-full bg-[#EAF7EC] text-[#5CB85F] text-[14px] font-medium">${esc(t('rank', { n: it.rank }))}</span>${rankDeltaHtml(it)}</span>
       <h2 class="text-[46px] font-black tracking-tight leading-[1.1] mt-7 break-keep">${esc(it.title)}</h2>
       ${it.subtitle ? `<p class="text-[22px] font-semibold italic text-[#5CB85F] mt-2">${esc(it.subtitle)}</p>` : ''}
       ${line ? `<p class="text-[16px] text-[#6E6E73] mt-2 leading-snug">${esc(line)}</p>` : ''}
@@ -686,7 +695,7 @@ function renderDetail() {
   $('#detailBody').innerHTML = `
     <div>
       <div class="flex items-center gap-2 mb-2 flex-wrap">
-        <span class="text-[13px] font-medium px-3 py-1 rounded-full" style="background:${st.bg};color:${st.fg}">${esc(t('rank', { n: it.rank }))}</span>
+        <span class="text-[13px] font-medium px-3 py-1 rounded-full" style="background:${st.bg};color:${st.fg}">${esc(t('rank', { n: it.rank }))}</span>${rankDeltaHtml(it)}
         ${it.tag ? `<span class="text-[11px] px-2.5 py-1 rounded-full bg-[#F2F2F7] text-[#6E6E73]">${esc(it.tag)}</span>` : ''}
       </div>
       <h3 class="text-[24px] font-bold tracking-tight leading-tight">${esc(it.title)}</h3>
@@ -1657,6 +1666,36 @@ function closeHotMap() {
 }
 $('#btnHotMapClose').onclick = closeHotMap;
 
+S.crowd = null;
+const CROWD_COLOR = { 4: '#E5484D', 3: '#F97316', 2: '#EAB308', 1: '#22C55E', 0: '#9CA3AF' };
+async function loadCrowd() {
+  if (S.crowd && Date.now() - S.crowd.at < 10 * 60e3) return S.crowd;
+  try { const d = await fn('crowd'); S.crowd = { ...d, at: Date.now() }; } catch { S.crowd = { places: [], at: Date.now(), error: true }; }
+  return S.crowd;
+}
+function crowdPin(p, sel) {
+  const c = CROWD_COLOR[p.score] || CROWD_COLOR[0];
+  const sz = sel ? 38 : 28;
+  return `<div style="width:${sz}px;height:${sz}px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;color:#fff">${icon('users2', sel ? 'w-5 h-5' : 'w-3.5 h-3.5', 2.2)}</div>`;
+}
+async function drawCrowdMap(fit) {
+  $('#hotMapSub').textContent = t('crowdSub');
+  await hotView.init({ lat: 37.5665, lng: 126.978 }, 12);
+  hotView.clear();
+  $('#hotMapCards').innerHTML = `<div class="w-full bg-white rounded-[22px] p-4 text-center text-[13px] text-[#8E8E93]">${esc(t('loadingTitle'))}</div>`;
+  const d = await loadCrowd();
+  if (S.hotFilter !== 'crowd') return;
+  const pts = (d.places || []).filter((p) => p.lat);
+  pts.forEach((p, i) => hotView.marker({ lat: p.lat, lng: p.lng, html: crowdPin(p, p.code === S.hotSel), title: p.name, z: (p.code === S.hotSel ? 2000 : 0) + p.score * 100 - i, size: 28, onClick: () => { S.hotSel = p.code; drawCrowdMap(false); const c = document.querySelector(`[data-crowd="${p.code}"]`); if (c) c.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); } }));
+  $('#hotMapCards').innerHTML = d.disabled ? `<div class="w-full bg-white rounded-[22px] p-4 text-center text-[13px] text-[#8E8E93]">${esc(t('crowdNoKey'))}</div>`
+    : pts.length ? pts.map((p) => `<div data-crowd="${esc(p.code)}" class="snap-center shrink-0 w-[78%] bg-white rounded-[22px] p-3.5 shadow-[0_8px_24px_rgba(0,0,0,0.14)] border border-black/[0.04] ${p.code === S.hotSel ? 'ring-2 ring-[#1D1D1F]' : ''}">
+        <div class="flex items-center gap-2"><span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold text-white" style="background:${CROWD_COLOR[p.score] || CROWD_COLOR[0]}">${esc(t('crowd_' + p.score))}</span><span class="text-[11px] text-[#8E8E93] ml-auto">${esc(String(p.time).slice(11, 16))}</span></div>
+        <h5 class="text-[16px] font-bold mt-1.5 truncate">${trSpan(p.name)}</h5>
+        <p class="text-[12px] text-[#6E6E73] mt-0.5">${esc(t('crowdPpl', { a: p.min.toLocaleString(), b: p.max.toLocaleString() }))}</p>
+      </div>`).join('') : `<div class="w-full bg-white rounded-[22px] p-4 text-center text-[13px] text-[#8E8E93]">${esc(t('noResults'))}</div>`;
+  translateDom($('#hotMapCards'));
+  if (fit) hotView.fit(pts.map((p) => ({ lat: p.lat, lng: p.lng })), { lat: 37.5665, lng: 126.978 }, 14); else hotView.resize();
+}
 function hotItems() {
   const data = trendData('hotplace');
   const all = data ? data.items : [];
@@ -1665,9 +1704,9 @@ function hotItems() {
   return { all, located: located.filter((it) => f === 'all' || (f === 'popup' ? it.kind === 'popup' : it.kind !== 'popup')) };
 }
 function renderHotFilters() {
-  $('#hotMapFilters').innerHTML = [['all', 'filterAll', 'pin', '#1D1D1F'], ['place', 'layer_hot', 'flame', LAYERS.hot.color], ['popup', 'layer_popup', 'gift', LAYERS.popup.color]].map(([k, key, ic, color]) => {
+  $('#hotMapFilters').innerHTML = [['all', 'filterAll', 'pin', '#1D1D1F'], ['place', 'layer_hot', 'flame', LAYERS.hot.color], ['popup', 'layer_popup', 'gift', LAYERS.popup.color], ['crowd', 'layer_crowd', 'users2', '#E5484D']].map(([k, key, ic, color]) => {
     const on = S.hotFilter === k;
-    return `<button data-hf="${k}" class="px-3.5 py-1.5 rounded-full text-[12px] font-medium flex items-center gap-1.5 border ${on ? 'text-white border-transparent' : 'bg-white text-[#6E6E73] border-black/[0.08]'}" style="${on ? `background:${color}` : ''}">${icon(ic, 'w-3.5 h-3.5', 2)}${esc(t(key))}</button>`;
+    return `<button data-hf="${k}" class="shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-full text-[12px] font-medium flex items-center gap-1.5 border ${on ? 'text-white border-transparent' : 'bg-white text-[#6E6E73] border-black/[0.08]'}" style="${on ? `background:${color}` : ''}">${icon(ic, 'w-3.5 h-3.5', 2)}${esc(t(key))}</button>`;
   }).join('');
 }
 $('#hotMapFilters').addEventListener('click', (e) => {
@@ -1679,6 +1718,7 @@ $('#hotMapFilters').addEventListener('click', (e) => {
 });
 
 async function drawHotMap(fit) {
+  if (S.hotFilter === 'crowd') return drawCrowdMap(fit);
   const { all, located } = hotItems();
   $('#hotMapSub').textContent = t('hotMapSub', { n: located.length, m: Math.max(0, all.length - all.filter((it) => it.location && it.location.lat).length) });
   const center = located[0] ? { lat: located[0].location.lat, lng: located[0].location.lng } : { lat: 37.5665, lng: 126.978 };
@@ -1735,6 +1775,8 @@ $('#hotMapCards').addEventListener('scroll', debounce(() => {
   if (best && best.dataset.hot !== S.hotSel) focusHot(best.dataset.hot, false);
 }, 120));
 $('#hotMapCards').addEventListener('click', (e) => {
+  const cc = e.target.closest('[data-crowd]');
+  if (cc && S.crowd) { const p = S.crowd.places.find((x) => x.code === cc.dataset.crowd); if (p && p.lat) { S.hotSel = p.code; hotView.pan({ lat: p.lat, lng: p.lng }, 15); drawCrowdMap(false); } return; }
   const card = e.target.closest('[data-hot]');
   if (!card) return;
   const it = hotItems().located.find((x) => x.id === card.dataset.hot);
