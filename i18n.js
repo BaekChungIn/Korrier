@@ -365,4 +365,7 @@ window.I18N = {
   sch_stage: ['무대', 'Stage', 'ステージ', '舞台', 'Escenario', 'Scène', 'เวที'],
   sch_release: ['드라마·영화', 'Drama/Film', 'ドラマ・映画', '剧集·电影', 'Serie/Cine', 'Série/Film', 'ละคร/หนัง'],
   moreTabs: ['더보기', 'More', 'もっと', '更多', 'Más', 'Plus', 'เพิ่มเติม'],
+  concertKpop: ['K-POP 스타', 'K-POP Stars', 'K-POPスター', 'K-POP明星', 'Estrellas K-POP', 'Stars K-POP', 'สตาร์ K-POP'],
+  concertGlobal: ['내한 스타', 'Global Stars in Korea', '来韓スター', '来韩明星', 'Estrellas en Corea', 'Stars en Corée', 'สตาร์ต่างชาติมาเกาหลี'],
+  basis_kopis: ['공연예술통합전산망(KOPIS)', 'KOPIS performance DB', 'KOPIS公演DB', 'KOPIS演出数据库', 'base KOPIS', 'base KOPIS', 'ฐานข้อมูล KOPIS'],
 };
